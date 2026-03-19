@@ -25,7 +25,7 @@ from ajet.tuner_lib.experimental.swarm_client import SwarmClient
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
-from on_user_submit_new_requests import on_user_submit_new_requests
+from on_user_submit_new_requests import on_user_submit_new_requests, get_query_history
 from on_compute_relative_reward import on_compute_relative_reward
 
 # Configuration
@@ -90,6 +90,14 @@ async def proxy_chat_completion(base_url: str, api_key: str, request: Request, i
     }
     json_data = await request.json()
     json_data["stream"] = is_stream
+
+    # Remove fields not supported by vLLM to avoid warnings
+    UNSUPPORTED_FIELDS = {"strict", "store"}
+    for field in UNSUPPORTED_FIELDS:
+        json_data.pop(field, None)
+    # Also remove 'strict' from response_format if present
+    if "response_format" in json_data and isinstance(json_data["response_format"], dict):
+        json_data["response_format"].pop("strict", None)
 
     async with httpx.AsyncClient(timeout=300.0) as client:
         resp = await client.post(f"{base_url}/chat/completions", json=json_data, headers=headers)
@@ -200,7 +208,7 @@ async def handle_one2many_request(request: Request, request_id: str) -> Dict | L
 
     valid_results = await run_all_episodes(request, is_stream)
     all_answers = [extract_assistant_message(r.response) for r in valid_results]
-    rewards = await on_compute_relative_reward(valid_results, all_answers)
+    rewards = await on_compute_relative_reward(valid_results, all_answers, question=user_query)
 
     await finalize_episodes(task, valid_results, rewards)
 
@@ -259,7 +267,7 @@ async def health_check():
 @app.get("/requests")
 async def get_requests():
     """Get all recorded user requests."""
-    return {"requests": USER_REQUEST_RECORD}
+    return {"requests": get_query_history()}
 
 
 if __name__ == "__main__":
