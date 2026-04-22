@@ -27,8 +27,14 @@ from ajet.tuner_lib.experimental.interchange_utils import (
     BoolResponse,
     RegisterEpisodeRequest,
     UpdateEngineStatusRequest,
+    PushVerboseLogRequest,
+    VerboseLogEntry,
+    VerboseLogsResponse,
     VALID_STATUSES,
 )
+
+VERBOSE_LOG_TTL_SECONDS = 30.0
+VERBOSE_LOG_MAX_ENTRIES = 50
 
 RCVTIMEO = 2 * 1000
 RCVTIMEO_OUT = 300 * 1000
@@ -122,7 +128,7 @@ def register_enable_swarm_mode_routes(
                     raise RuntimeError("Engine is no longer rolling, aborting wait for ack.")
                 continue
 
-    async def _revert_episode_to_unclaimed(episode_uuid: str, shared_mem_dict, shared_mem_dict_lock):
+    async def _revert_episode_to_unclaimed(episode_uuid: str, shared_mem_dict, shared_mem_dict_lock, revert_reason="timeout"):
         # check status again, because other thread may have changed it
         if ep_key(episode_uuid) not in shared_mem_dict:
             logger.warning(f"Episode record for {episode_uuid} not found in shared memory. It may have been already processed by another thread. Skipping unclaim.")
@@ -141,7 +147,8 @@ def register_enable_swarm_mode_routes(
         await asyncio.to_thread(_context_tracker_reset_blocking, episode_uuid, shared_mem_dict)
 
         # revert
-        logger.warning(f"Reverting episode {episode_uuid} to unclaimed due to client timeout.")
+        if revert_reason != "client_abort":
+            logger.warning(f"Reverting episode {episode_uuid} to unclaimed due to client timeout.")
         if ep_key(episode_uuid) in shared_mem_dict:
             es: EpisodeStatus = shared_mem_dict[ep_key(episode_uuid)]
             es.episode_status = "registered"
@@ -204,10 +211,11 @@ def register_enable_swarm_mode_routes(
                 continue
         # clean up episode records
         with shared_mem_dict_lock:
-            # preserve a record snapshot
-            shared_mem_dict[finished_ep_key(episode_uuid)] = shared_mem_dict[ep_key(episode_uuid)]
-            # then remove the active record
-            del shared_mem_dict[ep_key(episode_uuid)]
+            if ep_key(episode_uuid) in shared_mem_dict:
+                # preserve a record snapshot
+                shared_mem_dict[finished_ep_key(episode_uuid)] = shared_mem_dict[ep_key(episode_uuid)]
+                # then remove the active record
+                del shared_mem_dict[ep_key(episode_uuid)]
             if episode_uuid in shared_mem_dict["unclaimed_episodes"]:
                 shared_mem_dict["unclaimed_episodes"].remove(episode_uuid)
 
@@ -657,7 +665,7 @@ def register_enable_swarm_mode_routes(
 
         elif episode_type == "eval":
             if engine_status in ["ENGINE.ROLLING"]:
-                await _revert_episode_to_unclaimed(episode_uuid, shared_mem_dict, shared_mem_dict_lock)
+                await _revert_episode_to_unclaimed(episode_uuid, shared_mem_dict, shared_mem_dict_lock, revert_reason="client_abort")
             else:
                 _delete_episode_record(episode_uuid, shared_mem_dict, shared_mem_dict_lock)
 
@@ -689,7 +697,7 @@ def register_enable_swarm_mode_routes(
             return EndEpisodeResponse(success=True)
 
         if engine_status in ["ENGINE.ROLLING"]:
-            await _revert_episode_to_unclaimed(episode_uuid, shared_mem_dict, shared_mem_dict_lock)
+            await _revert_episode_to_unclaimed(episode_uuid, shared_mem_dict, shared_mem_dict_lock, revert_reason="client_abort")
         else:
             _delete_episode_record(episode_uuid, shared_mem_dict, shared_mem_dict_lock)
 
@@ -798,6 +806,35 @@ def register_enable_swarm_mode_routes(
         except Exception as e:
             logger.error(f"Error getting current batch rollout pool information: {e}")
             return CurrentBatchRolloutPoolInformation()
+
+    # --------------------------------------------------------------------
+    # ------------ verbose log (ephemeral, 30s TTL) ----------------------
+    # --------------------------------------------------------------------
+    if "verbose_logs" not in shared_mem_dict:
+        shared_mem_dict["verbose_logs"] = []
+
+    @app.post("/push_verbose_log", response_model=BoolResponse)
+    async def push_verbose_log(req: PushVerboseLogRequest):
+        """Push a short verbose status line. Auto-expires after 30 seconds."""
+        now = time.time()
+        entry = VerboseLogEntry(timestamp=now, tag=req.tag, message=req.message)
+        logs = list(shared_mem_dict.get("verbose_logs", []))
+        logs.append(entry.model_dump())
+        cutoff = now - VERBOSE_LOG_TTL_SECONDS
+        logs = [e for e in logs if e["timestamp"] >= cutoff]
+        if len(logs) > VERBOSE_LOG_MAX_ENTRIES:
+            logs = logs[-VERBOSE_LOG_MAX_ENTRIES:]
+        shared_mem_dict["verbose_logs"] = logs
+        return BoolResponse(success=True)
+
+    @app.get("/get_verbose_logs", response_model=VerboseLogsResponse)
+    async def get_verbose_logs():
+        """Return verbose log entries from the last 30 seconds."""
+        now = time.time()
+        cutoff = now - VERBOSE_LOG_TTL_SECONDS
+        logs = shared_mem_dict.get("verbose_logs", [])
+        fresh = [VerboseLogEntry(**e) for e in logs if e["timestamp"] >= cutoff]
+        return VerboseLogsResponse(entries=fresh)
 
     # --------------------------------------------------------------------
     # ------------ bring engine back to ENGINE.OFFLINE -------------------

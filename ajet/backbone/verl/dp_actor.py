@@ -23,6 +23,7 @@ import os
 
 import torch
 from torch import nn
+import torch.distributed as dist
 
 from verl import DataProto
 from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
@@ -32,6 +33,8 @@ from verl.utils.py_functional import append_to_dict
 # ajet/backbone/verl/seqlen_balancing.py
 from ajet.backbone.verl.seqlen_balancing import prepare_dynamic_batch, restore_dynamic_batch
 from verl.workers.actor.dp_actor import DataParallelPPOActor, TrustRegionTeacher
+from ajet.tuner_lib.experimental.interchange_utils import http_push_verbose_log
+from verl.workers.actor.dp_actor import DataParallelPPOActor
 
 __all__ = ["AjetDataParallelPPOActor"]
 
@@ -249,7 +252,10 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
                     advantages = model_inputs["advantages"]
                     # [AJET] Debug logging for tensor shapes
                     input_ids = model_inputs["input_ids"]
-                    print(f'[Update Policy] -> Micro batch shape, input_ids {input_ids.shape}, response {response_mask.shape} @{micro_batch_idx}/{num_micro_batches}')
+                    _shape_msg = f'[Update Policy] -> Micro batch shape, input_ids {input_ids.shape}, response {response_mask.shape} @{micro_batch_idx}/{num_micro_batches}'
+                    print(_shape_msg)
+                    if (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0:
+                        http_push_verbose_log(_shape_msg, tag="update_policy")
 
                     entropy_coeff = self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode

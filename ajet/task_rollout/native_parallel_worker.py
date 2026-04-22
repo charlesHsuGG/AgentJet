@@ -151,6 +151,47 @@ class DynamicRolloutManager(BaseRolloutManager):
         # Update snapshot for next comparison
         self._memory_snapshot = current_snapshot
 
+    def filter_out_dummy_tasks(
+        self, tracker_array: List[SingleAgentContextTracker]
+    ) -> List[SingleAgentContextTracker]:
+        """Drop trackers from tasks whose episodes all share the same performance_reward.
+
+        Such tasks yield zero group-relative advantage, contributing no learning signal.
+        Pre-filter batch statistics are stamped onto kept trackers so downstream
+        metrics can report the true (unshifted) success rate and reward.
+        """
+        from collections import defaultdict
+
+        pre_filter_success_rate = float(np.mean(
+            [t.reward_structure.success_rate for t in tracker_array]
+        )) if tracker_array else 0.0
+        pre_filter_reward = float(np.mean(
+            [t.reward_structure.final_scalar_reward for t in tracker_array]
+        )) if tracker_array else 0.0
+
+        task2tracker: Dict[str, List[SingleAgentContextTracker]] = defaultdict(list)
+        for tracker in tracker_array:
+            task2tracker[tracker.task_id].append(tracker)
+
+        kept: List[SingleAgentContextTracker] = []
+        n_dummy = 0
+        for ct_list in task2tracker.values():
+            rewards = [t.reward_structure.performance_reward for t in ct_list]
+            if len(rewards) < 2 or all(r == rewards[0] for r in rewards):
+                n_dummy += 1
+                continue
+            kept.extend(ct_list)
+
+        for tracker in kept:
+            tracker.current_batch_success_rate = pre_filter_success_rate
+            tracker.current_batch_reward = pre_filter_reward
+
+        logger.info(
+            f"filter_out_dummy_tasks: dropped {n_dummy} dummy tasks "
+            f"(out of {len(task2tracker)}), kept {len(kept)} / {len(tracker_array)} trackers."
+        )
+        return kept
+
     def rollout_static(
         self,
         tasks: List[Task],
@@ -481,6 +522,8 @@ class DynamicRolloutManager(BaseRolloutManager):
         # Force garbage collection
         gc.collect()
 
+        if self.config.ajet.swarm_mode_sample_collection_method == "rollout_until_finish_enough_non_dummy_tasks":
+            tracker_array = self.filter_out_dummy_tasks(tracker_array)
         return tracker_array
 
 
