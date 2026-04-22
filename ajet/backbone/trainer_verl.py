@@ -597,6 +597,16 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     with marked_timer("reward", timing_raw, color="yellow"):
                         reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
 
+                        self_distillation_data = self._maybe_build_self_distillation_batch(
+                            batch,
+                            reward_tensor,
+                            reward_extra_infos_dict,
+                        )
+                        if self_distillation_data is not None:
+                            self_distillation_batch, self_distillation_metrics = self_distillation_data
+                            batch = batch.union(self_distillation_batch)
+                            metrics.update(self_distillation_metrics)
+
                     # recompute old_log_probs
                     # Operating Mode Selection:
                     # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)

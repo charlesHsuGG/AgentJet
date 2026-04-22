@@ -22,6 +22,7 @@ import math
 import os
 
 import torch
+from torch import nn
 
 from verl import DataProto
 from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
@@ -30,7 +31,7 @@ from verl.utils.profiler import GPUMemoryLogger
 from verl.utils.py_functional import append_to_dict
 # ajet/backbone/verl/seqlen_balancing.py
 from ajet.backbone.verl.seqlen_balancing import prepare_dynamic_batch, restore_dynamic_batch
-from verl.workers.actor.dp_actor import DataParallelPPOActor
+from verl.workers.actor.dp_actor import DataParallelPPOActor, TrustRegionTeacher
 
 __all__ = ["AjetDataParallelPPOActor"]
 
@@ -129,8 +130,6 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
             outputs["sum_pi_squared"] = sum_pi_squared
         return outputs
 
-
-
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
         # make sure we are in training mode
@@ -138,6 +137,42 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
 
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
         pad_token_id = data.meta_info.get("pad_token_id", 0)
+
+        loss_mode = self.config.policy_loss.get("loss_mode", "vanilla")
+        # vanilla -> verl.trainer.ppo.core_algos.compute_policy_loss_vanilla
+
+        self_distillation_enabled = loss_mode == "sdpo"
+        self_distillation_cfg = getattr(self.config, "self_distillation", None)
+        teacher_regularization = "ema"
+        teacher_update_rate = 0.0
+        trust_region_teacher: Optional[nn.Module] = None
+        if self_distillation_enabled:
+            self_distillation_required_keys = [
+                "teacher_input_ids",
+                "teacher_attention_mask",
+                "teacher_position_ids",
+                "self_distillation_mask",
+            ]
+            missing = set(self_distillation_required_keys) - set(data.batch.keys())
+            if missing:
+                raise ValueError(f"SDPO is enabled but required teacher keys are missing: {sorted(missing)}")
+            teacher_regularization = self.resolve_teacher_regularization(self_distillation_cfg) 
+            teacher_update_rate = self.resolve_teacher_update_rate(self_distillation_cfg)
+            if teacher_regularization == "trust_region":
+                if self.use_fused_kernels:
+                    raise ValueError("SDPO trust-region teacher requires use_fused_kernels=False.")
+                if self.teacher_module is None:
+                    raise ValueError("Trust-region teacher requires a reference teacher_module.")
+                if isinstance(self.teacher_module, TrustRegionTeacher):
+                    trust_region_teacher = self.teacher_module
+                else:
+                    if self.teacher_module is self.actor_module:
+                        raise ValueError("Trust-region teacher requires a separate reference teacher_module.")
+                    trust_region_teacher = TrustRegionTeacher(
+                        teacher_module=self.teacher_module,
+                        student_module=self.actor_module,
+                        mix_coef=teacher_update_rate,
+                    )
 
         select_keys = [
             "responses",
@@ -152,6 +187,8 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
             select_keys.append("prompts")
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
+        if self_distillation_enabled:
+            select_keys.extend(self_distillation_required_keys)
         # Include pre-computed IS weights if present in batch
         # Weights are computed centrally in trainer and added to batch when algorithm.rollout_is=True
         if "rollout_is_weights" in data.batch.keys():
@@ -161,6 +198,9 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
             select_keys.append("rollout_log_probs")
 
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
+        has_non_empty_multi_modal_inputs = self._has_non_empty_multi_modal_inputs(
+            data.non_tensor_batch.get("multi_modal_inputs")
+        )
         non_tensor_select_keys = []
         if has_multi_modal_inputs:
             non_tensor_select_keys.append("multi_modal_inputs")
@@ -185,6 +225,7 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
             "actor/pg_loss": 0.0,
             "actor/kl_loss": 0.0,
         }
+        did_update = False
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
                 if self.config.use_dynamic_bsz:
@@ -214,6 +255,11 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
                     loss_agg_mode = self.config.loss_agg_mode
 
                     calculate_entropy = self.config.calculate_entropy or (entropy_coeff != 0)
+                    self_distillation_mask = (
+                        model_inputs.get("self_distillation_mask") if self_distillation_enabled else None
+                    )
+                    if self_distillation_enabled and has_non_empty_multi_modal_inputs:
+                        raise ValueError("SDPO does not support multi-modal inputs in actor.update_policy.")
 
                     if self.config.override_ppo_mini_batch_num > 0:
                         loss_scale_factor = response_mask.shape[0] / mini_batch_split_size
@@ -224,8 +270,16 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
                     loss_scale_factor *= self.config.loss_extra_scale_ratio  # [AJET] Extra scaling for loss if needed
 
                     # all return: (bsz, response_length)
+                    compute_full_log_probs = False
+                    if self_distillation_enabled and self_distillation_cfg.full_logit_distillation:
+                        compute_full_log_probs = True
                     outputs = self._forward_micro_batch(
-                        model_inputs, temperature=temperature, calculate_entropy=calculate_entropy
+                        self.actor_module,
+                        model_inputs,
+                        temperature=temperature,
+                        calculate_entropy=calculate_entropy,
+                        compute_full_log_probs=compute_full_log_probs,
+                        top_k_log_probs=self_distillation_cfg.distillation_topk if compute_full_log_probs else None
                     )
                     log_prob = outputs["log_probs"]
                     entropy = outputs["entropys"] if calculate_entropy else None
@@ -239,28 +293,59 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
                         else:
                             old_log_prob = model_inputs["old_log_probs"]
 
-                    loss_mode = self.config.policy_loss.get("loss_mode", "vanilla")
-                    # vanilla -> verl.trainer.ppo.core_algos.compute_policy_loss_vanilla
-
                     # Extract pre-computed rollout correction weights if present
                     # Weights are computed centrally in trainer and added when algorithm.rollout_is=True
                     rollout_is_weights = model_inputs.get("rollout_is_weights", None)
 
-                    # gpg -> verl.trainer.ppo.core_algos.compute_policy_loss_gpg
-                    # clip_cov -> verl.trainer.ppo.core_algos.compute_policy_loss_clip_cov
-                    policy_loss_fn = get_policy_loss_fn(loss_mode)
+                    if self_distillation_enabled:
+                        teacher_inputs = {
+                            "responses": model_inputs["responses"],
+                            "input_ids": model_inputs["teacher_input_ids"],
+                            "attention_mask": model_inputs["teacher_attention_mask"],
+                            "position_ids": model_inputs["teacher_position_ids"],
+                            "topk_indices": model_inputs.get("topk_indices", None),
+                        }
+                        teacher_model = trust_region_teacher or self.teacher_module or self.actor_module
+                        with torch.no_grad():
+                            teacher_outputs = self._forward_micro_batch(
+                                teacher_model, teacher_inputs,
+                                temperature=temperature,
+                                calculate_entropy=False,
+                                compute_full_log_probs=compute_full_log_probs,
+                            )
+                        student_full_log_probs = data.get("full_log_probs", None)
+                        teacher_log_prob, teacher_full_log_probs = teacher_outputs["log_probs"], teacher_outputs.get("full_log_probs", None)
+                        pg_loss, pg_metrics = compute_self_distillation_loss(
+                            old_log_probs=old_log_prob,
+                            log_probs=log_prob,
+                            advantages=advantages,
+                            response_mask=response_mask,
+                            teacher_log_probs=teacher_log_prob,
+                            student_full_log_probs=student_full_log_probs,
+                            teacher_full_log_probs=teacher_full_log_probs,
+                            self_distillation_mask=self_distillation_mask,
+                            loss_agg_mode=loss_agg_mode,
+                            config=self.config,
+                            rollout_is_weights=rollout_is_weights,
+                        )
 
-                    # Compute policy loss (any function is expected to return 2 values)
-                    pg_loss, pg_metrics = policy_loss_fn(
-                        old_log_prob=old_log_prob,
-                        log_prob=log_prob,
-                        advantages=advantages,
-                        response_mask=response_mask,
-                        loss_agg_mode=loss_agg_mode,
-                        config=self.config,
-                        rollout_is_weights=rollout_is_weights,
-                    )
-                    micro_batch_metrics.update(pg_metrics)
+                        micro_batch_metrics.update(pg_metrics)
+                    else:
+                        # gpg -> verl.trainer.ppo.core_algos.compute_policy_loss_gpg
+                        # clip_cov -> verl.trainer.ppo.core_algos.compute_policy_loss_clip_cov
+                        policy_loss_fn = get_policy_loss_fn(loss_mode)
+
+                        # Compute policy loss (any function is expected to return 2 values)
+                        pg_loss, pg_metrics = policy_loss_fn(
+                            old_log_prob=old_log_prob,
+                            log_prob=log_prob,
+                            advantages=advantages,
+                            response_mask=response_mask,
+                            loss_agg_mode=loss_agg_mode,
+                            config=self.config,
+                            rollout_is_weights=rollout_is_weights,
+                        )
+                        micro_batch_metrics.update(pg_metrics)
 
                     # Skip if using bypass_mode loss (metrics already computed in pg_metrics)
                     rollout_log_prob = model_inputs.get("rollout_log_probs", None)
@@ -307,9 +392,14 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
 
                     metrics["actor/pg_loss"] += pg_loss.detach().item() * loss_scale_factor
                     append_to_dict(metrics, micro_batch_metrics)
+
                 print(f'-> optimizer_step !')
                 grad_norm = self._optimizer_step()
+                if torch.isfinite(grad_norm).item():
+                    did_update = True
                 mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, mini_batch_metrics)
         self.actor_optimizer.zero_grad()
+        if did_update:
+            self._update_teacher()
         return metrics

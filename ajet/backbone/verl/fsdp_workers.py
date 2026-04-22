@@ -244,6 +244,7 @@ class AjetActorRolloutRefWorker(ActorRolloutRefWorker):
     def init_model(self):
         # [AgentJet Change]: use the custom DataParallelPPOActor which supports FSDP and other features needed for ActorRolloutRefWorker
         from ajet.backbone.verl.dp_actor import AjetDataParallelPPOActor as DataParallelPPOActor
+        from verl.workers.actor import TrustRegionTeacher
 
         # This is used to import external_lib into the huggingface systems
         import_external_libs(self.config.model.get("external_lib", None))
@@ -355,6 +356,21 @@ class AjetActorRolloutRefWorker(ActorRolloutRefWorker):
                     self.config.ref.use_prefix_grouper = use_prefix_grouper
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
 
+            if self._is_actor:
+                self_distillation_cfg = self.config.actor.get("self_distillation", None)
+                loss_mode = self.config.actor.policy_loss.get("loss_mode", "vanilla")
+                if self_distillation_cfg is not None and loss_mode == "sdpo":
+                    teacher_regularization = self.actor.resolve_teacher_regularization(self_distillation_cfg)
+                    teacher_update_rate = self.actor.resolve_teacher_update_rate(self_distillation_cfg)
+                    if str(teacher_regularization).lower() in {"trust_region", "trust-region", "trustregion"}:
+                        self.actor.teacher_module = TrustRegionTeacher(
+                            teacher_module=self.ref_module_fsdp,
+                            student_module=self.actor_module_fsdp,
+                            mix_coef=float(teacher_update_rate),
+                        )
+                    else:
+                        self.actor.teacher_module = self.ref_module_fsdp
+
         if self._is_actor:
             self.flops_counter = FlopsCounter(self.actor_model_config)
             self.checkpoint_manager = FSDPCheckpointManager(
@@ -384,6 +400,7 @@ class AjetActorRolloutRefWorker(ActorRolloutRefWorker):
 
 # ================================= Async related workers =================================
 class AjetAsyncActorRolloutRefWorker(AjetActorRolloutRefWorker):
+
     @register(dispatch_mode=Dispatch.ONE_TO_ALL, blocking=False)
     async def update_weights(self, global_steps: int = None):
         await self.rollout_mode()
