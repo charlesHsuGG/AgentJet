@@ -18,6 +18,8 @@ class AjetTrainerCommon:
     algorithm: AjetAlgorithm = field(default_factory=AjetAlgorithm)
     optim: AjetOptim = field(default_factory=AjetOptim)
     ppo_epochs: int = 1
+    val_print_to_markdown_file_path: str | None = None
+    train_print_to_markdown_file_path: str | None = None
 
 
 @dataclass
@@ -37,6 +39,7 @@ class AjetRollout:
     user_workflow: str = "tutorial.example_appworld.appworld->ExampleAgentScopeWorkflow"
     n_vllm_engine: int = 1  # this argument is NOT effective when NOT using trinity
     tensor_model_parallel_size: int = 1
+    max_num_seqs: int = 64
     num_repeat: int = 8
     gpu_memory_utilization: float = 0.85
     compute_madness_checklist: List[str] = field(default_factory=list)

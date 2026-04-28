@@ -73,6 +73,7 @@ class AgentJetJob:
         max_response_length: Maximum token length for model responses (token length after the first llm-generated token, default 15000).
         max_response_length_in_one_turn: Maximum token length for model response in one turn (default 4096, should be <= max_response_length).
         max_model_len: Maximum total token length (prompt + response) the model can handle (bigger => more GPU memory), default 18000.
+        max_num_seqs: Maximum number of sequences processed in parallel by each vLLM engine (default 64).
         mini_batch_num: Number of mini-batches to split training batch into (how many mini steps, i.e. how many times the `optimizer.step` should be executed, per big train batch).
         lora_rank: LoRA rank for low-rank adaptation (set > 0 to enable LoRA training, default 0 means disabled).
         lora_alpha: LoRA alpha scaling factor (default 16).
@@ -83,6 +84,8 @@ class AgentJetJob:
         lr: Learning rate for optimizer (default 1e-6).
         ppo_epochs: Number of PPO epochs per update (default 1).
         compute_madness_checklist: List of madness checks to monitor LLM's abnormal behaviors during rollout (default ["nonsense"], detect infinite repeat such as "但但但但但但但但但但....").
+        val_print_to_markdown_file_path: Path to a file where validation metrics are appended after every validation pass (default None, disabled).
+        train_print_to_markdown_file_path: Path to a file where training metrics are appended after every training step (default None, disabled).
     """
 
     def __init__(
@@ -106,6 +109,7 @@ class AgentJetJob:
         max_response_length: int | None = None,
         max_response_length_in_one_turn: int | None = None,
         max_model_len: int | None = None,
+        max_num_seqs: int | None = None,
         mini_batch_num: int | None = None,
         lora_rank: int | None = None,
         lora_alpha: int | None = None,
@@ -116,6 +120,8 @@ class AgentJetJob:
         lr: float | None = None,
         ppo_epochs: int | None = None,
         compute_madness_checklist: List[str] | None = None,
+        val_print_to_markdown_file_path: str | None = None,
+        train_print_to_markdown_file_path: str | None = None,
     ) -> None:
 
         if base_yaml_config is None:
@@ -164,6 +170,7 @@ class AgentJetJob:
         self.max_response_length_in_one_turn: int = cast(int, max_response_length_in_one_turn)
         self.max_response_length: int = cast(int, max_response_length)
         self.max_model_len: int = cast(int, max_model_len)
+        self.max_num_seqs: int = cast(int, max_num_seqs)
         self.mini_batch_num: int = cast(int, mini_batch_num)
         self.lora_rank: int = cast(int, lora_rank)
         self.lora_alpha: int = cast(int, lora_alpha)
@@ -174,6 +181,8 @@ class AgentJetJob:
         self.lr: float = cast(float, lr)
         self.ppo_epochs: int = cast(int, ppo_epochs)
         self.compute_madness_checklist: List[str] = cast(List[str], compute_madness_checklist)
+        self.val_print_to_markdown_file_path: str = cast(str, val_print_to_markdown_file_path)
+        self.train_print_to_markdown_file_path: str = cast(str, train_print_to_markdown_file_path)
 
         # see `ajet/default_config/ajet_swarm_default.yaml`
         overrides = {
@@ -195,6 +204,7 @@ class AgentJetJob:
             "ajet.data.max_response_length":                "max_response_length",
             "ajet.rollout.max_response_length_in_one_turn": "max_response_length_in_one_turn",
             "ajet.rollout.max_model_len":                   "max_model_len",
+            "ajet.rollout.max_num_seqs":                    "max_num_seqs",
             "ajet.trainer_common.mini_batch_num":           "mini_batch_num",
             "ajet.lora.lora_rank":                          "lora_rank",
             "ajet.lora.lora_alpha":                         "lora_alpha",
@@ -205,6 +215,8 @@ class AgentJetJob:
             "ajet.trainer_common.optim.lr":                 "lr",
             "ajet.trainer_common.ppo_epochs":               "ppo_epochs",
             "ajet.rollout.compute_madness_checklist":       "compute_madness_checklist",
+            "ajet.trainer_common.val_print_to_markdown_file_path":   "val_print_to_markdown_file_path",
+            "ajet.trainer_common.train_print_to_markdown_file_path": "train_print_to_markdown_file_path",
         }
 
         # if any value given in kwargs, override the corresponding value in config
