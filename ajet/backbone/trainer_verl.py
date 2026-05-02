@@ -53,27 +53,6 @@ from ajet.task_reader import dict_to_ajet_task
 from ajet.task_rollout.native_parallel_worker import VerlRolloutManager
 from ajet.utils.metric_helper import save_trajectory_as_json_file, update_metrics
 
-
-def compute_reward(data: DataProto, reward_fn) -> tuple[torch.Tensor, dict[str, Any]]:
-    """
-    Compute reward for a batch of data.
-    Args:
-        data: DataProto object containing the input data.
-        reward_fn: Reward function to compute the reward.
-    Returns:
-        Tuple of reward tensor and extra info dictionary.
-    """
-    try:
-        reward_result = reward_fn(data, return_dict=True)
-        reward_tensor = reward_result["reward_tensor"]
-        reward_extra_infos_dict = reward_result.get("reward_extra_info", {})
-    except Exception as e:
-        print(f"Error in reward_fn: {e}")
-        reward_tensor = reward_fn(data)
-        reward_extra_infos_dict = {}
-
-    return reward_tensor, reward_extra_infos_dict
-
 def parse_reward_from_dataproto(data: DataProto, return_dict=False) -> dict | torch.Tensor:
     """
     Compute reward for a batch of data.
@@ -115,6 +94,22 @@ def parse_reward_from_dataproto(data: DataProto, return_dict=False) -> dict | to
         }
     else:
         return reward_tensor
+
+
+def compute_reward(data: DataProto) -> tuple[torch.Tensor, dict[str, Any]]:
+    """
+    Compute reward for a batch of data.
+    Args:
+        data: DataProto object containing the input data.
+        reward_fn: Reward function to compute the reward.
+    Returns:
+        Tuple of reward tensor and extra info dictionary.
+    """
+
+    reward_result = parse_reward_from_dataproto(data, return_dict=True)
+    reward_tensor = reward_result["reward_tensor"]  # type: ignore
+    reward_extra_infos_dict = reward_result.get("reward_extra_info", {})  # type: ignore
+    return reward_tensor, reward_extra_infos_dict
 
 
 def union_gen_batch_via_task_id(tasks, batch: DataProto, gen_batch_output: DataProto, discard_original_batch=False):
@@ -593,7 +588,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
 
                     with marked_timer("reward", timing_raw, color="yellow"):
-                        reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
+                        reward_tensor, reward_extra_infos_dict = compute_reward(batch)
 
                     # recompute old_log_probs
                     # Operating Mode Selection:
@@ -604,7 +599,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
                     if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
                         from verl.trainer.ppo.rollout_corr_helper import apply_bypass_mode
-
                         apply_bypass_mode(
                             batch=batch,
                             rollout_corr_config=rollout_corr_config,
@@ -663,11 +657,11 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     with marked_timer("adv", timing_raw, color="brown"):
                         # we combine with rule-based rm
                         reward_extra_infos_dict: dict[str, list]
-                        batch.batch["token_level_scores"] = reward_tensor
+                        batch.batch["token_level_scores"] = reward_tensor   # from compute_reward
 
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
-
+                        from ajet import bp; bp("KL")
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:
                             batch, kl_metrics = apply_kl_penalty(
