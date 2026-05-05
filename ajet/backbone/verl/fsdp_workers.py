@@ -33,26 +33,20 @@ from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, register
 from verl.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
 from verl.utils.config import omega_conf_to_dataclass
-from verl.utils.device import (
-    get_device_name,
-    get_nccl_backend,
-)
+from verl.utils.device import get_device_name, get_nccl_backend
 from verl.utils.flops_counter import FlopsCounter
 from verl.utils.fs import copy_to_local
-from verl.utils.fsdp_utils import (
-    fsdp_version,
-    offload_fsdp_model_to_cpu,
-    offload_fsdp_optimizer,
-)
+from verl.utils.fsdp_utils import (fsdp_version, offload_fsdp_model_to_cpu,
+                                   offload_fsdp_optimizer)
 from verl.utils.import_utils import import_external_libs
 from verl.utils.memory_utils import aggressive_empty_cache
-from verl.utils.profiler import DistProfiler, DistProfilerExtension, ProfilerConfig, log_gpu_memory_usage
-
+from verl.utils.profiler import (DistProfiler, DistProfilerExtension,
+                                 ProfilerConfig, log_gpu_memory_usage)
 # QAT support
 from verl.workers.config import FSDPEngineConfig
-from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 from verl.workers.fsdp_workers import ActorRolloutRefWorker
-
+from verl.workers.sharding_manager.fsdp_ulysses import \
+    FSDPUlyssesShardingManager
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -243,8 +237,10 @@ class AjetActorRolloutRefWorker(ActorRolloutRefWorker):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
         # [AgentJet Change]: use the custom DataParallelPPOActor which supports FSDP and other features needed for ActorRolloutRefWorker
-        from ajet.backbone.verl.dp_actor import AjetDataParallelPPOActor as DataParallelPPOActor
         from verl.workers.actor import TrustRegionTeacher
+
+        from ajet.backbone.verl.dp_actor import \
+            AjetDataParallelPPOActor as DataParallelPPOActor
 
         # This is used to import external_lib into the huggingface systems
         import_external_libs(self.config.model.get("external_lib", None))
@@ -397,6 +393,7 @@ class AjetActorRolloutRefWorker(ActorRolloutRefWorker):
 
         # Free cached GPU memory so colocated vLLM processes can see it via cudaMemGetInfo
         aggressive_empty_cache(force_sync=True)
+
 
 # ================================= Async related workers =================================
 class AjetAsyncActorRolloutRefWorker(AjetActorRolloutRefWorker):

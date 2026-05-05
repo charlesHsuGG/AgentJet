@@ -20,21 +20,25 @@ Overrides `update_policy` to support `override_ppo_mini_batch_num` and add debug
 import logging
 import math
 import os
+from typing import Optional
 
 import torch
-from torch import nn
 import torch.distributed as dist
-
+from torch import nn
 from verl import DataProto
-from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
+from verl.trainer.ppo.core_algos import (
+    agg_loss, compute_self_distillation_loss,
+    compute_self_distillation_with_rlvr_loss, get_policy_loss_fn, kl_penalty)
 from verl.utils.device import get_device_id
 from verl.utils.profiler import GPUMemoryLogger
 from verl.utils.py_functional import append_to_dict
+from verl.workers.actor.dp_actor import (DataParallelPPOActor,
+                                         TrustRegionTeacher)
+
 # ajet/backbone/verl/seqlen_balancing.py
-from ajet.backbone.verl.seqlen_balancing import prepare_dynamic_batch, restore_dynamic_batch
-from verl.workers.actor.dp_actor import DataParallelPPOActor, TrustRegionTeacher
+from ajet.backbone.verl.seqlen_balancing import (prepare_dynamic_batch,
+                                                 restore_dynamic_batch)
 from ajet.tuner_lib.experimental.interchange_utils import http_push_verbose_log
-from verl.workers.actor.dp_actor import DataParallelPPOActor
 
 __all__ = ["AjetDataParallelPPOActor"]
 
@@ -159,7 +163,7 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
             missing = set(self_distillation_required_keys) - set(data.batch.keys())
             if missing:
                 raise ValueError(f"SDPO is enabled but required teacher keys are missing: {sorted(missing)}")
-            teacher_regularization = self.resolve_teacher_regularization(self_distillation_cfg) 
+            teacher_regularization = self.resolve_teacher_regularization(self_distillation_cfg)
             teacher_update_rate = self.resolve_teacher_update_rate(self_distillation_cfg)
             if teacher_regularization == "trust_region":
                 if self.use_fused_kernels:
@@ -319,22 +323,36 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
                                 calculate_entropy=False,
                                 compute_full_log_probs=compute_full_log_probs,
                             )
-                        student_full_log_probs = data.get("full_log_probs", None)
-                        teacher_log_prob, teacher_full_log_probs = teacher_outputs["log_probs"], teacher_outputs.get("full_log_probs", None)
-                        pg_loss, pg_metrics = compute_self_distillation_loss(
-                            old_log_probs=old_log_prob,
-                            log_probs=log_prob,
-                            advantages=advantages,
-                            response_mask=response_mask,
-                            teacher_log_probs=teacher_log_prob,
-                            student_full_log_probs=student_full_log_probs,
-                            teacher_full_log_probs=teacher_full_log_probs,
-                            self_distillation_mask=self_distillation_mask,
-                            loss_agg_mode=loss_agg_mode,
-                            config=self.config,
-                            rollout_is_weights=rollout_is_weights,
-                        )
-
+                        full_log_prob = data.get("full_log_probs", None)
+                        teacher_log_prob, teacher_full_log_prob = teacher_outputs["log_probs"], teacher_outputs.get("full_log_probs", None)
+                        if self_distillation_cfg.use_sdrlvr:
+                            pg_loss, pg_metrics = compute_self_distillation_with_rlvr_loss(
+                                old_log_prob=old_log_prob,
+                                log_prob=log_prob,
+                                advantages=advantages,
+                                response_mask=response_mask,
+                                full_log_prob=full_log_prob,
+                                teacher_log_prob=teacher_log_prob,
+                                teacher_full_log_prob=teacher_full_log_prob,
+                                self_distillation_mask=self_distillation_mask,
+                                loss_agg_mode=loss_agg_mode,
+                                config=self.config,
+                                rollout_is_weights=rollout_is_weights,
+                            )
+                        else:
+                            pg_loss, pg_metrics = compute_self_distillation_loss(
+                                old_log_prob=old_log_prob,
+                                log_prob=log_prob,
+                                advantages=advantages,
+                                response_mask=response_mask,
+                                full_log_prob=full_log_prob,
+                                teacher_log_prob=teacher_log_prob,
+                                teacher_full_log_prob=teacher_full_log_prob,
+                                self_distillation_mask=self_distillation_mask,
+                                loss_agg_mode=loss_agg_mode,
+                                config=self.config,
+                                rollout_is_weights=rollout_is_weights,
+                            )
                         micro_batch_metrics.update(pg_metrics)
                     else:
                         # gpg -> verl.trainer.ppo.core_algos.compute_policy_loss_gpg
@@ -358,7 +376,8 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
                     if loss_mode != "bypass_mode" and rollout_log_prob is not None:
                         # Compute metrics using CURRENT policy π_θ vs π_rollout
                         # Tracks evolving off-policy gap as π_θ updates during mini-batch training
-                        from verl.trainer.ppo.rollout_corr_helper import compute_rollout_corr_metrics_from_logprobs
+                        from verl.trainer.ppo.rollout_corr_helper import \
+                            compute_rollout_corr_metrics_from_logprobs
 
                         rollout_corr_metrics = compute_rollout_corr_metrics_from_logprobs(
                             log_prob=log_prob,
@@ -399,7 +418,7 @@ class AjetDataParallelPPOActor(DataParallelPPOActor):
                     metrics["actor/pg_loss"] += pg_loss.detach().item() * loss_scale_factor
                     append_to_dict(metrics, micro_batch_metrics)
 
-                print(f'-> optimizer_step !')
+                print('-> optimizer_step !')
                 grad_norm = self._optimizer_step()
                 if torch.isfinite(grad_norm).item():
                     did_update = True
