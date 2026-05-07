@@ -22,16 +22,16 @@ import socket
 import hydra
 import ray
 from omegaconf import DictConfig, OmegaConf
-from verl.utils.device import is_cuda_available
-from verl.utils.dataset.rl_dataset import collate_fn
 from torch.utils.data import Dataset as TorchDataset
+from verl.utils.dataset.rl_dataset import collate_fn
+from verl.utils.device import is_cuda_available
 
 # Create training and validation datasets.
 from ajet.backbone.warm_up import warm_up_process
 from ajet.task_reader import RouterTaskReader, task_to_standard_dataset
-from ajet.utils.process_dataset import create_rl_sampler
 from ajet.utils.core_env_vars import get_runtime_env
 from ajet.utils.launch_utils import set_loguru_default_color
+from ajet.utils.process_dataset import create_rl_sampler
 
 set_loguru_default_color()
 
@@ -68,7 +68,8 @@ def run_ppo(config: DictConfig) -> None:
             ray.shutdown()
         if config.ajet.enable_interchange_server:
             if config.ajet.enable_swarm_mode:
-                from ajet.tuner_lib.experimental.interchange_utils import http_change_engine_status
+                from ajet.tuner_lib.experimental.interchange_utils import \
+                    http_change_engine_status
                 print("Changing engine status to OFFLINE before shutdown...")
                 http_change_engine_status(config, "ENGINE.OFFLINE", global_step=0)
 
@@ -142,10 +143,9 @@ class TaskRunner:
         if config.actor_rollout_ref.actor.strategy in {"fsdp", "fsdp2"}:
             assert config.critic.strategy in {"fsdp", "fsdp2"}
             from verl.single_controller.ray import RayWorkerGroup
-            from ajet.backbone.verl import AjetActorRolloutRefWorker
-            from ajet.backbone.verl import AjetAsyncActorRolloutRefWorker
 
-
+            from ajet.backbone.verl import (AjetActorRolloutRefWorker,
+                                            AjetAsyncActorRolloutRefWorker)
 
             ActorRolloutRefWorker = AjetActorRolloutRefWorker
             actor_rollout_cls = AjetAsyncActorRolloutRefWorker
@@ -153,11 +153,10 @@ class TaskRunner:
 
         elif config.actor_rollout_ref.actor.strategy == "megatron":
             assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
-            from verl.single_controller.ray.megatron import NVMegatronRayWorkerGroup
+            from verl.single_controller.ray.megatron import \
+                NVMegatronRayWorkerGroup
             from verl.workers.megatron_workers import (
-                ActorRolloutRefWorker,
-                AjetAsyncActorRolloutRefWorker,
-            )
+                ActorRolloutRefWorker, AjetAsyncActorRolloutRefWorker)
 
             actor_rollout_cls = AjetAsyncActorRolloutRefWorker
             ray_worker_group_cls = NVMegatronRayWorkerGroup
@@ -182,12 +181,10 @@ class TaskRunner:
             Role.ActorRollout: global_pool_id,
         }
 
-
         # Add a reference policy worker if KL loss or KL reward is used.
         if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
             role_worker_mapping[Role.RefPolicy] = ray.remote(ActorRolloutRefWorker)
             mapping[Role.RefPolicy] = global_pool_id
-
 
         resource_pool_manager = ResourcePoolManager(
             resource_pool_spec=resource_pool_spec, mapping=mapping
@@ -205,7 +202,8 @@ class TaskRunner:
         from ajet.backbone.trainer_verl import AjetRayPPOTrainer
 
         if config.ajet.enable_interchange_server:
-            from ajet.tuner_lib.experimental.oai_model_server import start_interchange_server
+            from ajet.tuner_lib.experimental.oai_model_server import \
+                start_interchange_server
             start_interchange_server(config)
 
         # Initialize the PPO trainer.
