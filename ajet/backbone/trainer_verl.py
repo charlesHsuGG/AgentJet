@@ -354,9 +354,8 @@ class AjetRayPPOTrainer(RayPPOTrainer):
 
         if config.data.get("val_batch_size", None) is not None:
             logger.warning(
-                "WARNING: val_batch_size is deprecated."
-                + " Validation datasets are sent to inference engines as a whole batch,"
-                + " which will schedule the memory themselves."
+                "WARNING: val_batch_size is deprecated. Validation datasets are sent to inference engines as a whole batch, "
+                "which will schedule the memory themselves."
             )
 
         # check eval config
@@ -592,7 +591,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
 
                     with marked_timer("reward", timing_raw, color="yellow"):
-                        reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
+                        reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.config.reward_fn)
 
                         self_distillation_data = self._maybe_build_self_distillation_batch(
                             batch,
@@ -614,7 +613,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
                         from verl.trainer.ppo.rollout_corr_helper import \
                             apply_bypass_mode
-
                         apply_bypass_mode(
                             batch=batch,
                             rollout_corr_config=rollout_corr_config,
@@ -674,11 +672,11 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     with marked_timer("adv", timing_raw, color="brown"):
                         # we combine with rule-based rm
                         reward_extra_infos_dict: dict[str, list]
-                        batch.batch["token_level_scores"] = reward_tensor
+                        batch.batch["token_level_scores"] = reward_tensor   # from compute_reward
 
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
-
+                        from ajet import bp; bp("KL")  # pylint: disable=no-name-in-module, import-outside-toplevel # noqa
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:
                             batch, kl_metrics = apply_kl_penalty(
@@ -692,9 +690,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         # Only runs in decoupled mode (computes once per batch using stable π_old)
                         # In bypass mode, this is skipped - actor computes metrics from evolving π_θ vs π_rollout
                         if (
-                            rollout_corr_config is not None
-                            and "rollout_log_probs" in batch.batch
-                            and not bypass_recomputing_logprobs  # Only in decoupled mode
+                            rollout_corr_config is not None and "rollout_log_probs" in batch.batch and not bypass_recomputing_logprobs  # Only in decoupled mode
                         ):
                             from verl.trainer.ppo.rollout_corr_helper import \
                                 compute_rollout_correction_and_add_to_batch

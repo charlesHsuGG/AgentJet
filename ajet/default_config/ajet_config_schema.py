@@ -17,10 +17,18 @@ class AjetTrainerCommon:
     n_gpus_per_node: int = 8
     algorithm: AjetAlgorithm = field(default_factory=AjetAlgorithm)
     optim: AjetOptim = field(default_factory=AjetOptim)
+    use_kl_loss: bool = True
+    use_kl_in_reward: bool = False
+    kl_penalty_type: str = "kl"
     ppo_epochs: int = 1
     val_print_to_markdown_file_path: str | None = None
     train_print_to_markdown_file_path: str | None = None
     total_training_steps: int | None = None
+    test_freq: int = 20
+    save_freq: int = 20
+    total_epochs: int = 50
+    val_pass_n: int = 4
+    val_before_train: bool = False
 
 
 @dataclass
@@ -53,6 +61,16 @@ class AjetLora:
     target_modules: str = "all-linear"
     load_format: str = "auto"
     layered_summon: bool = False
+
+
+@dataclass
+class AjetInterchangeServer:
+    interchange_method: str = "ipc"
+    interchange_server_port: Any = "auto"
+    num_fastapi_process: int = 1
+    max_fastapi_threads: int = 512
+    max_inference_tracker_threads: int = 64
+    already_started: bool = False
 
 
 @dataclass
@@ -94,6 +112,8 @@ class AjetDefaultConfig:
     lora: AjetLora = field(default_factory=AjetLora)
     enable_swarm_mode: bool = True
     swarm_mode_sample_collection_method: str = "rollout_until_finish_enough_tasks"
+    execute_test: bool = False
+    interchange_server: AjetInterchangeServer = field(default_factory=AjetInterchangeServer)
 
 @dataclass
 class Config:
