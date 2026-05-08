@@ -122,7 +122,7 @@ class AsyncLlmBridge(object):
             ):
 
                 parsed_tool_calls = self.tool_parser.extract_tool_calls(decoded_text, None)  # type: ignore
-                parsed_tool_calls = parsed_tool_calls.model_dump()
+                parsed_tool_calls = parsed_tool_calls.model_dump(mode='json')
 
                 model_called = parsed_tool_calls["tools_called"]
                 if model_called:
@@ -155,7 +155,7 @@ class AsyncLlmBridge(object):
                 "completion_tokens": len(token_array), # type: ignore
                 "total_tokens": len(prompt_token_ids) + len(token_array), # type: ignore
             }
-            # from ajet import bp; bp("DECODE")
+
             return {
                 "role": "assistant",
                 "request_id": request_id,
@@ -327,7 +327,7 @@ class OpenaiLlmProxyWithTracker(object):
         episode_uuid: str,
     ):
         from openai.types.chat.chat_completion import ChatCompletion
-        req_as_dict = req.model_dump()
+        req_as_dict = req.model_dump(mode='json')
 
         # infer + process with context tracker
         llm_output = await self.run_infer(
