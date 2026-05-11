@@ -17,7 +17,7 @@ import os
 import time
 import statistics
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 
 from tqdm import tqdm
@@ -90,6 +90,7 @@ class CocktailSwarmRunner(ABC):
 
     def run(self) -> None:
         self.setup()
+        self.run_eval(n_global_step=0)
         self.train_loop()
 
     # ---------------- shared training ----------------
