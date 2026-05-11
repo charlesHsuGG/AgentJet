@@ -187,7 +187,7 @@ class SingleAgentContextTracker(BaseTracker):
         for ext_msg in ext_msg_array:
             d: dict = {
                 "role": ext_msg.role,
-                "content": ext_msg.content_for_compare,
+                "content": ext_msg.text_content_for_compare,
             }
             if ext_msg.tool_calls:
                 d.update({"tool_calls": ext_msg.tool_calls})

@@ -83,6 +83,7 @@ class AsyncLlmBridge(object):
                 updated_sampling_params.update(custom_sampling_params)
 
             input_messages = copy.deepcopy(messages)
+            # the input (prompt) sequence as text
             prompt_text = ajet_apply_chat_template(
                 tokenizer=self.tokenizer,
                 conversation=input_messages,
@@ -90,6 +91,7 @@ class AsyncLlmBridge(object):
                 add_generation_prompt=True,
                 tokenize=False,
             )
+            # the input (prompt) sequence as input_ids
             prompt_token_ids = self.tokenizer(prompt_text)["input_ids"]
 
             final_res: TokenOutput = await self.async_rollout_manager.generate(
@@ -160,6 +162,8 @@ class AsyncLlmBridge(object):
                 "role": "assistant",
                 "request_id": request_id,
                 "content": decoded_text,
+                "prompt_text": prompt_text,
+                "prompt_token_ids": prompt_token_ids,
                 "tool_calls": tool_calls,
                 "finish_reason": finish_reason,
                 "usage": usage,
