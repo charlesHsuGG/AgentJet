@@ -130,6 +130,8 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
         if disable_toolcalls:
             consider_roles.remove("tool")
 
+        previous_message_encounter_user_role = False
+
         for i, msg in enumerate(messages):
 
             if (disable_toolcalls) and (not isinstance(msg["content"], str)):
@@ -166,6 +168,11 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
             else:
                 author = "env"
 
+            if msg["role"] == "user":
+                previous_message_encounter_user_role = True
+
+            any_later_msg_has_user_role = any((m["role"] == "user") for m in messages[i+1:])
+
             # extract content block from openai-competible messages and convert to ExtendedMessage
             timeline += [
                 ExtendedMessage(
@@ -179,8 +186,11 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                     token_generator="auto",
                     name = (msg["name"] if "name" in msg else ""),
                     first_message=(i == 0),
+                    before_last_query=any_later_msg_has_user_role
                 )
             ]
+            if ("<think>" in msg["content"]) and (not previous_message_encounter_user_role):
+                logger.warning(f"Warning! Message content contains <think> tag, but no prior message has `user` role! This is not a common scenario. Please check your agent loop carefully.")
 
         return timeline
 
@@ -393,9 +403,9 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
     ) -> List[ExtendedMessage]:
         """
         fix retokenization drift
-        prompt_text: [this llm call] the prompt in text format used in generation
-        prompt_token_ids: [this llm call] the prompt token ids used in generation (prompt_text->prompt_token_ids using tokenizer)
-        previous_ext_context: [from previous context] the context history
+        prompt_text = llm_output["prompt_text"]:            [this llm call] the prompt in text format used in generation
+        prompt_token_ids = llm_output["prompt_token_ids"]:  [this llm call] the prompt token ids used in generation (prompt_text->prompt_token_ids using tokenizer)
+        previous_ext_context:                               [from previous context] the context history
         """
 
         # remove tailing, usually `<|im_start|> assistant`
@@ -467,21 +477,22 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                 # good, everything is perfect
                 continue
             else:
+                from ajet import bp; bp("SWARM")
                 # otherwise, we throw a warning (do not worry, this causes almost no influence in the training)
                 print_dict(
                     {
-                        "expected_prompt_text": prompt_text_split[j],
-                        "current_prompt_text": current_prompt_text[j],
-                        "expected_token_ids": split_prompt_token_ids[j],
-                        "current_token_ids": previous_ext_context[j].token_arr,
+                        "expected_prompt_text": prompt_text_split[j],       # from llm_output["prompt_text"]
+                        "current_prompt_text": current_prompt_text[j],      # history prompt text converted from token_arr to text using tokenizer
+                        "expected_token_ids": vllm_token_array,         # from llm_output["prompt_token_ids"]
+                        "current_token_ids": tracker_token_array,       # from previous_ext_context[j].token_arr
                     },
                     mod="exception",
                     header="Prompt token ids mismatch.",
                 )
-                # fix drift
-                previous_ext_context[j].token_arr = self.tokenizer(
-                    prompt_text_split[j], return_tensors="pt", padding=False
-                )["input_ids"]
+                # # fix drift
+                # previous_ext_context[j].token_arr = self.tokenizer(
+                #     prompt_text_split[j], return_tensors="pt", padding=False
+                # )["input_ids"].tolist()
 
     def process_reward(self, reward_structure: Reward):
         self.reward_structure = reward_structure
