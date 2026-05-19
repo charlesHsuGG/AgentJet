@@ -206,6 +206,7 @@ class SingleAgentContextTracker(BaseTracker):
             config=self.config,
             task_batch_index=self.task_batch_index,
             task_tag=self.task_tag,
+            episode_uuid=self.episode_uuid,
             task_id=self.task_id,
         )
         sample.truncate_output_ids()
@@ -227,6 +228,7 @@ class SingleAgentContextTracker(BaseTracker):
                 config=self.config,
                 task_batch_index=self.task_batch_index,
                 task_tag=self.task_tag,
+                episode_uuid=self.episode_uuid,
                 task_id=self.task_id,
             )
             sample_arr += [sample]
