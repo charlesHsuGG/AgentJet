@@ -5,14 +5,13 @@ import shutil
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 from beast_logger import print_dict
 from loguru import logger
-from types import SimpleNamespace
 
 from ajet.utils.config_utils import align_parameters
 from ajet.utils.smart_daemon import LaunchCommandWhenAbsent
-
 
 
 def get_backbone_target(backbone):
@@ -28,8 +27,10 @@ def get_backbone_target(backbone):
     backbone_target = "ajet.backbone.main_verl"  # Default to trinity
     if backbone == "verl":
         backbone_target = "ajet.backbone.main_verl"
-    if backbone == "debug":
+    if backbone == "debug_vllm":
         backbone_target = "ajet.backbone.main_vllm"
+    if backbone == "debug_sglang":
+        backbone_target = "ajet.backbone.main_sglang"
     if backbone == "trinity":
         backbone_target = "ajet.backbone.main_trinity"
     return backbone_target
@@ -211,60 +212,60 @@ def launch_logview(exp_name=None):
         logger.error(f"Error opening web browser: {e}")
 
 
-def start_ray_service(args, env, cluster=False):
-    """
-    Start a Ray service with appropriate configuration.
+# def start_ray_service(args, env, cluster=False):
+#     """
+#     Start a Ray service with appropriate configuration.
 
-    Args:
-        args: Command line arguments containing debug settings
-    """
-    # Get the current Python interpreter directory
-    python_dir = os.path.dirname(sys.executable)
-    ray_path = os.path.join(python_dir, "ray")
-    # if CUDA_VISIBLE_DEVICES is set, remove it from `env`
-    if "CUDA_VISIBLE_DEVICES" in env:
-        del env["CUDA_VISIBLE_DEVICES"]
-    if not cluster:
-        companion = LaunchCommandWhenAbsent(
-            full_argument_list=[f"{ray_path} start --head --block"],
-            dir="./",
-            tag="ray_service",
-            use_pty=True,
-        )
-        launch_wait_time = 600
-        success_std_string = "Ray runtime started"
-    else:
-        HOSTNAME = os.uname().nodename
-        MASTER_ADDR = os.getenv("MASTER_ADDR")
-        MASTER_PORT = os.getenv("MASTER_PORT")
-        if HOSTNAME == MASTER_ADDR:
-            companion = LaunchCommandWhenAbsent(
-                full_argument_list=[
-                    f"{ray_path} start --head --node-ip-address={MASTER_ADDR} --port={MASTER_PORT} --disable-usage-stats --block"
-                ],
-                dir="./",
-                tag="ray_service_head",
-                use_pty=True,
-            )
-            launch_wait_time = 600
-            success_std_string = "Ray runtime started"
-        else:
-            companion = LaunchCommandWhenAbsent(
-                full_argument_list=[
-                    f"{ray_path} start --address={MASTER_ADDR}:{MASTER_PORT} --disable-usage-stats --block"
-                ],
-                dir="./",
-                tag="ray_service_worker",
-                use_pty=True,
-            )
-            launch_wait_time = 9999999999999
-            # success_std_string = "Connected to Ray cluster"
-            success_std_string = "Just wait here forever"
-    companion.launch(
-        launch_wait_time=launch_wait_time,
-        success_std_string=success_std_string,
-        env_dict=env,
-    )
+#     Args:
+#         args: Command line arguments containing debug settings
+#     """
+#     # Get the current Python interpreter directory
+#     python_dir = os.path.dirname(sys.executable)
+#     ray_path = os.path.join(python_dir, "ray")
+#     # if CUDA_VISIBLE_DEVICES is set, remove it from `env`
+#     if "CUDA_VISIBLE_DEVICES" in env:
+#         del env["CUDA_VISIBLE_DEVICES"]
+#     if not cluster:
+#         companion = LaunchCommandWhenAbsent(
+#             full_argument_list=[f"{ray_path} start --head --block"],
+#             dir="./",
+#             tag="ray_service",
+#             use_pty=True,
+#         )
+#         launch_wait_time = 600
+#         success_std_string = "Ray runtime started"
+#     else:
+#         HOSTNAME = os.uname().nodename
+#         MASTER_ADDR = os.getenv("MASTER_ADDR")
+#         MASTER_PORT = os.getenv("MASTER_PORT")
+#         if HOSTNAME == MASTER_ADDR:
+#             companion = LaunchCommandWhenAbsent(
+#                 full_argument_list=[
+#                     f"{ray_path} start --head --node-ip-address={MASTER_ADDR} --port={MASTER_PORT} --disable-usage-stats --block"
+#                 ],
+#                 dir="./",
+#                 tag="ray_service_head",
+#                 use_pty=True,
+#             )
+#             launch_wait_time = 600
+#             success_std_string = "Ray runtime started"
+#         else:
+#             companion = LaunchCommandWhenAbsent(
+#                 full_argument_list=[
+#                     f"{ray_path} start --address={MASTER_ADDR}:{MASTER_PORT} --disable-usage-stats --block"
+#                 ],
+#                 dir="./",
+#                 tag="ray_service_worker",
+#                 use_pty=True,
+#             )
+#             launch_wait_time = 9999999999999
+#             # success_std_string = "Connected to Ray cluster"
+#             success_std_string = "Just wait here forever"
+#     companion.launch(
+#         launch_wait_time=launch_wait_time,
+#         success_std_string=success_std_string,
+#         env_dict=env,
+#     )
 
 
 def verify_python_env(args, exp_config):
@@ -340,13 +341,11 @@ def execute_training_process(
     """
 
     # Fixed config asset locations
-    TRINITY_BOOT_YAML = "ajet/default_config/trinity/trinity_launch.yaml"  # THIS FILE IS READ ONLY, and ALWAYS FIXED
-    TRINITY_CONFIG_AUTO_CONVERSION = (
-        "ajet/default_config/trinity/config_auto_convertion_trinity.jsonc"
-    )
-    VERL_CONFIG_AUTO_CONVERSION = (
-        "ajet/default_config/verl/config_auto_convertion_verl.jsonc"
-    )
+    CURRENT_PATH = os.path.dirname(__file__)
+    TRINITY_BOOT_YAML = os.path.join(CURRENT_PATH, "../default_config/trinity/trinity_launch.yaml")  # THIS FILE IS READ ONLY, and ALWAYS FIXED
+    TRINITY_CONFIG_AUTO_CONVERSION = os.path.join(CURRENT_PATH, "../default_config/trinity/config_auto_convertion_trinity.jsonc")
+    VERL_CONFIG_AUTO_CONVERSION = os.path.join(CURRENT_PATH, "../default_config/verl/config_auto_convertion_verl.jsonc")
+    print(os.path.abspath(VERL_CONFIG_AUTO_CONVERSION))
 
     os.makedirs('/tmp/ajet', exist_ok=True)
     assert os.path.exists('/tmp/ajet'), "Temporary directory /tmp/ajet cannot be create."
@@ -411,12 +410,14 @@ def execute_training_process(
     except subprocess.CalledProcessError as e:
         logger.error(f"Error running subprocess: {e}")
         if is_swarm_server:
-            from ajet.tuner_lib.experimental.interchange_utils import http_change_engine_status
+            from ajet.tuner_lib.experimental.interchange_utils import \
+                http_change_engine_status
             http_change_engine_status(exp_config, "ENGINE.OFFLINE", global_step=0)
         sys.exit(1)
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         if is_swarm_server:
-            from ajet.tuner_lib.experimental.interchange_utils import http_change_engine_status
+            from ajet.tuner_lib.experimental.interchange_utils import \
+                http_change_engine_status
             http_change_engine_status(exp_config, "ENGINE.OFFLINE", global_step=0)
         sys.exit(1)

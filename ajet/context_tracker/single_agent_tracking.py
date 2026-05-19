@@ -1,14 +1,12 @@
-import torch
 import copy
 from collections import defaultdict
 from typing import List, Tuple
+
+import torch
 from loguru import logger
 
-from ajet.context_tracker.base_tracker import (
-    BaseTracker,
-    ExtendedMessage,
-    replace_token_ids,
-)
+from ajet.context_tracker.base_tracker import (BaseTracker, ExtendedMessage,
+                                               replace_token_ids)
 from ajet.schema.trajectory import Reward, Sample
 from ajet.utils.tokenizer import ajet_apply_chat_template
 
@@ -414,7 +412,7 @@ class SingleAgentContextTracker(BaseTracker):
         return
 
     def get_generation_prompt_token(self):
-        dummy_msg = [{"role": "assistant", "content": "dummy text"}]
+        dummy_msg = [{"role": "user", "content": "dummy text"}]
         self.generation_prompt_token, _ = self.get_inc(
             ajet_apply_chat_template(
                 tokenizer=self.tokenizer,

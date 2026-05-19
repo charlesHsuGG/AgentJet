@@ -1,37 +1,27 @@
-import multiprocessing
-import time
-import zmq
-import os
 import asyncio
+import multiprocessing
+import os
 import threading
-from loguru import logger
+import time
 from functools import lru_cache
-from types import SimpleNamespace
-from fastapi import FastAPI, HTTPException
 from multiprocessing.managers import DictProxy
-from typing import Coroutine, Optional, Tuple, List
-from ajet.utils.process_killer import kill_process_tree
-from ajet.tuner_lib.experimental.swarm_overwatch_utils import CurrentBatchRolloutPoolInformation
-from ajet.tuner_lib.experimental.interchange_utils import DEBUG, VERBOSE
+from types import SimpleNamespace
+from typing import Coroutine, List, Optional, Tuple
+
+import zmq
+from fastapi import FastAPI, HTTPException
+from loguru import logger
+
 from ajet.tuner_lib.experimental.interchange_utils import (
-    SyncTrainConfigRequest,
-    ClaimEpisodeRequest,
-    ClaimEpisodeResponse,
-    CheckWhetherEpisodeClaimedRequest,
-    CanContinueEpisodeRequest,
-    CanContinueEpisodeResponse,
-    EndEpisodeRequest,
-    EndEpisodeResponse,
-    EpisodeStatus,
-    EpisodeBufferResponse,
-    BoolResponse,
-    RegisterEpisodeRequest,
-    UpdateEngineStatusRequest,
-    PushVerboseLogRequest,
-    VerboseLogEntry,
-    VerboseLogsResponse,
-    VALID_STATUSES,
-)
+    DEBUG, VALID_STATUSES, VERBOSE, BoolResponse, CanContinueEpisodeRequest,
+    CanContinueEpisodeResponse, CheckWhetherEpisodeClaimedRequest,
+    ClaimEpisodeRequest, ClaimEpisodeResponse, EndEpisodeRequest,
+    EndEpisodeResponse, EpisodeBufferResponse, EpisodeStatus,
+    PushVerboseLogRequest, RegisterEpisodeRequest, SyncTrainConfigRequest,
+    UpdateEngineStatusRequest, VerboseLogEntry, VerboseLogsResponse)
+from ajet.tuner_lib.experimental.swarm_overwatch_utils import \
+    CurrentBatchRolloutPoolInformation
+from ajet.utils.process_killer import kill_process_tree
 
 VERBOSE_LOG_TTL_SECONDS = 30.0
 VERBOSE_LOG_MAX_ENTRIES = 50
@@ -333,12 +323,15 @@ def register_enable_swarm_mode_routes(
         if VERBOSE:
             logger.info(f"Running: /start_engine")
         try:
-            import ray
             import tempfile
+
+            import ray
             import yaml as yaml_module
-            from ajet.utils.launch_utils import execute_training_process
+
+            from ajet.launcher import (get_backbone_target,
+                                       setup_environment_vars)
             from ajet.utils.config_utils import prepare_experiment_config
-            from ajet.launcher import get_backbone_target, setup_environment_vars
+            from ajet.utils.launch_utils import execute_training_process
 
             # Check if config has been synced
             if "train_config_yaml" not in shared_mem_dict:
@@ -394,15 +387,15 @@ def register_enable_swarm_mode_routes(
             # Setup environment variables
             env, exp_config = setup_environment_vars(args, exp_config, main_yaml_fp)
 
-            # Start ray if not already started
-            if not ray.is_initialized():
-                from ajet.utils.launch_utils import start_ray_service
+            # # Start ray if not already started
+            # if not ray.is_initialized():
+            #     # from ajet.utils.launch_utils import start_ray_service
 
-                logger.info("[start_engine] Starting Ray service...")
-                # start_ray_service(args, env)
-                await asyncio.to_thread(start_ray_service, args, env)  # start ray in separate thread to avoid blocking
-            else:
-                logger.info("[start_engine] Ray already initialized")
+            #     logger.info("[start_engine] Starting Ray service...")
+            #     # start_ray_service(args, env)
+            #     await asyncio.to_thread(start_ray_service, args, env)  # start ray in separate thread to avoid blocking
+            # else:
+            #     logger.info("[start_engine] Ray already initialized")
 
             # Start training process in a separate process
             p = multiprocessing.Process(

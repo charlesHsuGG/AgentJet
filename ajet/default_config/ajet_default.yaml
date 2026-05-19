@@ -66,7 +66,7 @@ ajet:
     max_num_seqs: 64
 
     # the usage of infer engine, options: (vllm, sglang)
-    name: vllm
+    name: sglang
 
     # GPU memory utilization for vLLM engine
     gpu_memory_utilization: 0.85
@@ -222,13 +222,17 @@ ajet:
     debug_first_n_tasks: 2
 
     # what is the vllm engine port in the background
-    debug_vllm_port: 18000
+    debug_port: 18000
 
     # what is the seed of the vllm engine in the background
-    debug_vllm_seed: 12345
+    debug_seed: 12345
 
     # what is the TP size in debug mode
     debug_tensor_parallel_size: 4
+
+    debug_tool_call_parser: null
+  
+    debug_reasoing_parser: null
 
 
   # (ajet.trainer_common) trainer common configurations
@@ -255,7 +259,7 @@ ajet:
     n_gpus_per_node: 8
 
     # logger selection
-    logger: swanlab
+    logger: wandb
 
     # algorithm setting
     algorithm:

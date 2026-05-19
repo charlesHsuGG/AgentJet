@@ -1,30 +1,26 @@
-import threading
-import uuid
-import time
-import httpx
 import json
 import re
-import yaml
 import tempfile
-from beast_logger import print_dict
+import threading
+import time
+import uuid
 from typing import List, Tuple
+
+import httpx
+import yaml
+from beast_logger import print_dict
 from loguru import logger
-from ajet.schema.task import WorkflowOutput, Task
+
 from ajet.copilot.job import AgentJetJob
+from ajet.schema.task import Task, WorkflowOutput
 from ajet.tuner_lib.as_oai_baseurl_apikey import OpenaiBaseUrlAndApiKey
-from ajet.tuner_lib.experimental.swarm_overwatch_utils import CurrentBatchRolloutPoolInformation
 from ajet.tuner_lib.experimental.interchange_utils import (
-    SyncTrainConfigRequest,
-    ClaimEpisodeRequest,
-    ClaimEpisodeResponse,
-    CanContinueEpisodeRequest,
-    CanContinueEpisodeResponse,
-    EndEpisodeRequest,
-    EndEpisodeResponse,
-    EpisodeStatus,
-    EpisodeBufferResponse,
-    SwarmThrottlePolicy,
-)
+    CanContinueEpisodeRequest, CanContinueEpisodeResponse, ClaimEpisodeRequest,
+    ClaimEpisodeResponse, EndEpisodeRequest, EndEpisodeResponse,
+    EpisodeBufferResponse, EpisodeStatus, SwarmThrottlePolicy,
+    SyncTrainConfigRequest)
+from ajet.tuner_lib.experimental.swarm_overwatch_utils import \
+    CurrentBatchRolloutPoolInformation
 
 # general http timeout
 GENERAL_TIMEOUT = 30
@@ -33,6 +29,7 @@ CLEAN_RECORD_TIMEOUT = 10
 START_EPISODE_RETRY_DELAY = 15
 TROTTLE_EPISODE_RETRY_DELAY = 2
 WAIT_MORE_AVAIL_EPISODE_RETRY_DELAY = 2
+
 
 def raise_for_status_with_detail(resp):
     try:
@@ -51,7 +48,8 @@ def raise_for_status_with_detail(resp):
             raise RuntimeError(f"SwarmClient error {resp.status_code} with non-JSON response: {response_text}") from e
 
 
-class SwarmServerOfflineError(Exception): ...
+class SwarmServerOfflineError(Exception):
+    ...
 
 
 class SwarmClientBase(object):
@@ -244,7 +242,6 @@ class SwarmClientBase(object):
                 time.sleep(5)
 
 
-
 class SwarmClient(SwarmClientBase):
 
     def __init__(self, server_url: str, verbose: bool = True):
@@ -268,7 +265,6 @@ class SwarmClient(SwarmClientBase):
         for episode_uuid in expired_episodes:
             self.record_episode_expire_time.pop(episode_uuid, None)
         return
-
 
     def _check_throttle_policy(self, throttle_policy: SwarmThrottlePolicy, pool_info: CurrentBatchRolloutPoolInformation) -> Tuple[bool, str]:
         """
@@ -317,7 +313,8 @@ class SwarmClient(SwarmClientBase):
             # get the number of totally completed tasks (task_episode_count >= expected_num_repeat)
             total_completed_tasks = sum(1 for count in task_episode_count.values() if count >= throttle_policy.expected_num_repeat)
             if total_completed_tasks < throttle_policy.expected_batch_size:
-                # logger.debug(f"Throttling check for task_id {current_task_id}: there are only {total_completed_tasks} completed tasks in the batch, which is below the expected_batch_size of {throttle_policy.expected_batch_size}. ")
+                # logger.debug(f"Throttling check for task_id {current_task_id}: there are only {total_completed_tasks} completed tasks in the batch, "
+                # "which is below the expected_batch_size of {throttle_policy.expected_batch_size}. ")
                 return False, ""
 
         if current_task_id in self._recent_seen_tasks:
@@ -332,7 +329,8 @@ class SwarmClient(SwarmClientBase):
             # logger.debug(f"Throttling check for task_id {current_task_id}: already has the same task_id from other client_uuid in the batch. ")
             return False, ""
 
-        # task_set - task_set_with_alien_client_uuid to get the number of unique tasks that are not from other client_uuid, which is the real number of unique tasks that may cause throttling for this task_id
+        # task_set - task_set_with_alien_client_uuid to get the number of unique tasks that are not from other client_uuid, 
+        # which is the real number of unique tasks that may cause throttling for this task_id
         real_unique_task = task_set - task_set_with_alien_client_uuid
         n_unique_task = len(real_unique_task)
 
@@ -346,7 +344,7 @@ class SwarmClient(SwarmClientBase):
             return False, ""
 
     def _remember_seen_task(self, task_id: str, batch_size, num_repeat):
-        MAX_SEEN_TASK_BUFFER_SIZE = batch_size*num_repeat*3  # keep buffer size manageable, can be tuned
+        MAX_SEEN_TASK_BUFFER_SIZE = batch_size * num_repeat * 3  # keep buffer size manageable, can be tuned
         if task_id not in self._recent_seen_tasks:
             self._recent_seen_tasks.append(task_id)
             if len(self._recent_seen_tasks) > MAX_SEEN_TASK_BUFFER_SIZE:
@@ -359,7 +357,7 @@ class SwarmClient(SwarmClientBase):
             self._remember_seen_task(throttle_policy.current_task_id, throttle_policy.expected_batch_size, throttle_policy.expected_num_repeat)
         return should_throttle
 
-    def begin_episode(self, discard_episode_timeout=240, episode_type="train", throttle_policy: SwarmThrottlePolicy|None = None) -> Tuple[str, OpenaiBaseUrlAndApiKey]:
+    def begin_episode(self, discard_episode_timeout=240, episode_type="train", throttle_policy: SwarmThrottlePolicy | None = None) -> Tuple[str, OpenaiBaseUrlAndApiKey]:
         """
         Block until an episode is claimed.
         Argument:
@@ -367,16 +365,17 @@ class SwarmClient(SwarmClientBase):
             - episode_type:
                 - train: data will be fed to training pipeline
                 - eval: data will NOT be fed to training pipeline
-            - throttle_policy:        when there are multiple clients running different tasks (e.g. math + coding), you may need to arrange the percentage of different tasks in each batch (e.g. 40% math + 60% coding).
+            - throttle_policy:        when there are multiple clients running different tasks (e.g. math + coding), 
+                                      you may need to arrange the percentage of different tasks in each batch (e.g. 40% math + 60% coding).
                                       But of course, you can set up your own logic and ignore this argument, the choice is all yours.
         Return:
             (episode_uuid, openai_base_url, openai_api_key)
         """
         return self._begin_episode_auto_retry(discard_episode_timeout, episode_type, throttle_policy)
 
-    def _begin_episode_auto_retry(self, discard_episode_timeout=240, episode_type="train", throttle_policy: SwarmThrottlePolicy|None = None) -> Tuple[str, OpenaiBaseUrlAndApiKey]:
+    def _begin_episode_auto_retry(self, discard_episode_timeout=240, episode_type="train", throttle_policy: SwarmThrottlePolicy | None = None) -> Tuple[str, OpenaiBaseUrlAndApiKey]:
         # max_episode_time: when an episode has **lasted** for more than X seconds, it will be terminated **locally** by client (call `end_episode` will be re-route to `abort_episode`)
-        max_episode_time = 8*discard_episode_timeout
+        max_episode_time = 8 * discard_episode_timeout
         status, status_json = self.get_engine_status()  # warm up connection and log the status
         if status not in ["ENGINE.ROLLING"]:
             self.logger_info(f"Engine status is {status}. Waiting until ENGINE.ROLLING...")
@@ -404,7 +403,7 @@ class SwarmClient(SwarmClientBase):
                     pool_info = self.get_rollout_stat()
                     should_throttle = self._should_throttle(throttle_policy, pool_info)
                     if should_throttle:
-                        self.logger_info(f"Throttle policy is active, delaying episode ...")
+                        self.logger_info("Throttle policy is active, delaying episode ...")
                         retry_delay = TROTTLE_EPISODE_RETRY_DELAY
                         continue
 
@@ -441,11 +440,11 @@ class SwarmClient(SwarmClientBase):
                         episode_uuid=episode_uuid
                     )
                 else:
-                    need_snap_scenarios =[
+                    need_snap_scenarios = [
                         "Engine is syncing weights",
                         "Engine is in post-rolling phase",
                     ]
-                    need_wait_scenarios =[
+                    need_wait_scenarios = [
                         "No available episodes to claim.",
                     ]
                     if any(scenario in data.fail_cause for scenario in need_snap_scenarios):
@@ -479,7 +478,7 @@ class SwarmClient(SwarmClientBase):
                     if self._begin_episode_lock.locked():
                         self._begin_episode_lock.release()
 
-    def end_episode(self, task:Task, episode_uuid: str, workflow_output: WorkflowOutput):
+    def end_episode(self, task: Task, episode_uuid: str, workflow_output: WorkflowOutput):
 
         if not episode_uuid:
             logger.error("No episode to end.")
@@ -494,7 +493,10 @@ class SwarmClient(SwarmClientBase):
                 return
         else:
             # send abort signal to server to clean up episode
-            logger.warning(f"Episode {episode_uuid} has expired (expired at least {CLEAN_RECORD_TIMEOUT} seconds ago). Please use a larger `discard_episode_timeout` when `begin_episode`. Skipping end_episode.")
+            logger.warning(
+                f"Episode {episode_uuid} has expired (expired at least {CLEAN_RECORD_TIMEOUT} seconds ago). "
+                "Please use a larger `discard_episode_timeout` when `begin_episode`. Skipping end_episode."
+            )
             self.abort_episode(episode_uuid)
             return
 
@@ -530,7 +532,6 @@ class SwarmClient(SwarmClientBase):
         else:
             logger.error(f"Failed to end episode {episode_uuid}")
             raise RuntimeError(f"Failed to end episode {episode_uuid}")
-
 
     def abort_episode(self, episode_uuid: str):
         if not episode_uuid:
@@ -622,7 +623,6 @@ class SwarmClient(SwarmClientBase):
         self._wait_until_status_change_to(desired_status="ENGINE.ROLLING")
         logger.success("Training engine is now ROLLING and ready.")
 
-
     def can_continue_episode(self, episode_uuid: str) -> bool:
         if not episode_uuid:
             return False
@@ -679,9 +679,9 @@ class SwarmClient(SwarmClientBase):
             logger.warning("ensure_new_experiment is set to True, but force_restart is not set! Will still continue the experiment on the current model version!")
             time.sleep(8)
 
-        logger.success(f"--------------------------------------------------------------------------------------------------")
-        logger.success(f"Run `python -m ajet.launcher --swarm-overwatch={self.server_url}` to monitor the training process.")
-        logger.success(f"--------------------------------------------------------------------------------------------------")
+        logger.success("--------------------------------------------------------------------------------------------------")
+        logger.success("Run `python -m ajet.launcher --swarm-overwatch={self.server_url}` to monitor the training process.")
+        logger.success("--------------------------------------------------------------------------------------------------")
 
         current_status, _ = self.get_engine_status()
         if current_status == "ENGINE.OFFLINE":
@@ -694,7 +694,7 @@ class SwarmClient(SwarmClientBase):
             self.logger_info("Engine is already ROLLING. No action needed.")
         elif current_status in ["ENGINE.CANNOT_CONNECT"]:
             logger.error("Unable to connect to swarm server.")
-            raise RuntimeError(f"Unable to connect to swarm server.")
+            raise RuntimeError("Unable to connect to swarm server.")
         elif current_status in ["ENGINE.BOOTING", "ENGINE.WEIGHT_SYNCING"]:
             self.logger_info(f"Engine is {current_status}. Waiting until it becomes ROLLING...")
             self._wait_until_status_change_to(desired_status="ENGINE.ROLLING")
@@ -764,7 +764,7 @@ class SwarmClient(SwarmClientBase):
             )
             raise_for_status_with_detail(resp)
             return resp.json().get("server_experiment_dir", None)
-        except Exception as e:
+        except Exception:
             return "saved_experiments"
 
     def get_rollout_stat(self) -> CurrentBatchRolloutPoolInformation:
@@ -809,8 +809,9 @@ class SwarmClient(SwarmClientBase):
                 "Hint": f"Please run `ajet-swarm overwatch --swarm-url={self.server_url}` to get more details."
             }
             print_dict(stat, mod="console", header="Current Swarm Rollout Pool Information")
-        except:
+        except Exception:
             pass
+
 
 def auto_train_with_dataset(dataset, swarm_worker: SwarmClient, execute_agent, local_grpo_n=2, remote_batch_size=8):
     from ajet.utils.thread_executors import PeriodicDrainThreadPoolExecutor

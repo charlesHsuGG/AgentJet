@@ -201,9 +201,9 @@ Now, we have obtained all materials required to train the agent.
     # ------------------ do not modify ------------------
     hydra:
       searchpath:
-        - file://ajet/default_config
-        - file://ajet/default_config/verl
-        - file://ajet/default_config/trinity
+        - pkg://ajet/default_config
+        - pkg://ajet/default_config/verl
+        - pkg://ajet/default_config/trinity
 
     # ------------------ do not modify ------------------
     defaults:
@@ -408,9 +408,9 @@ ajet --conf tutorial/example_math_agent/math_agent.yaml
     # ------------------ do not modify ------------------
     hydra:
       searchpath:
-        - file://ajet/default_config
-        - file://ajet/default_config/verl
-        - file://ajet/default_config/trinity
+        - pkg://ajet/default_config
+        - pkg://ajet/default_config/verl
+        - pkg://ajet/default_config/trinity
 
     # ------------------ do not modify ------------------
     defaults:

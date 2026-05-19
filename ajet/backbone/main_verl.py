@@ -23,6 +23,7 @@ import hydra
 import ray
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import Dataset as TorchDataset
+from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
 from verl.utils.dataset.rl_dataset import collate_fn
 from verl.utils.device import is_cuda_available
 
@@ -57,11 +58,40 @@ def run_ppo(config: DictConfig) -> None:
     """
     # Check if Ray is not initialized
     if not ray.is_initialized():
-        # this is for local ray cluster
-        runtime_env = get_runtime_env(config)
-        ray.init(
-            runtime_env=runtime_env,
-        )
+        # Initialize Ray with a local cluster configuration
+        # Set environment variables in the runtime environment to control tokenizer parallelism,
+        # NCCL debug level, VLLM logging level, and allow runtime LoRA updating
+        # `num_cpus` specifies the number of CPU cores Ray can use, obtained from the configuration
+        default_runtime_env = get_ppo_ray_runtime_env()
+        ray_init_kwargs = config.ray_kwargs.get("ray_init", {})
+        runtime_env_kwargs = ray_init_kwargs.get("runtime_env", {})
+
+        if config.transfer_queue.enable:
+            # Add runtime environment variables for transfer queue
+            runtime_env_vars = runtime_env_kwargs.get("env_vars", {})
+            runtime_env_vars["TRANSFER_QUEUE_ENABLE"] = "1"
+            runtime_env_kwargs["env_vars"] = runtime_env_vars
+
+        allow_broadcast_env = ["HF_", "NVTE_", "CUDA_", "WANDB_", "TIKTOKEN_", "NCCL_", "VLLM_", "SGLANG_", "TORCH_"]
+        default_env_vars = {
+            key: value for key, value in os.environ.items()
+            if any(key.startswith(prefix) for prefix in allow_broadcast_env)
+        }
+        if "env_vars" not in runtime_env_kwargs:
+            runtime_env_kwargs["env_vars"] = {
+                "TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "WARN",
+                "VLLM_LOGGING_LEVEL": "WARN", **default_env_vars
+            }
+        else:
+            runtime_env_kwargs["env_vars"].update({
+                "TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "WARN",
+                "VLLM_LOGGING_LEVEL": "WARN", **default_env_vars
+            })
+
+        runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)
+        ray_init_kwargs = OmegaConf.create({**ray_init_kwargs, "runtime_env": runtime_env})
+        print(f"ray init kwargs: {ray_init_kwargs}")
+        ray.init(**OmegaConf.to_container(ray_init_kwargs))
 
     def on_shutdown():
         if ray.is_initialized():
@@ -88,9 +118,9 @@ def run_ppo(config: DictConfig) -> None:
             is_nvtx_available()
         ), "nvtx is not available in CUDA platform. Please 'pip3 install nvtx'"
         nsight_options = OmegaConf.to_container(config.trainer.controller_nsight_options)
-        runner = TaskRunner.options(runtime_env={"nsight": nsight_options}).remote()
+        runner = TaskRunner.options(runtime_env={"nsight": nsight_options}).remote()  # pylint: disable=no-member
     else:
-        runner = TaskRunner.remote()
+        runner = TaskRunner.remote()  # pylint: disable=no-member
     ray.get(runner.run.remote(config))
 
 

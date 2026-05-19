@@ -71,7 +71,7 @@ def companion_launch():
     # max_num_seqs = config.actor_rollout_ref.rollout.max_num_seqs
     # max_model_len = config.ajet.rollout.max_model_len
     # seed = config.ajet.debug.debug_vllm_seed
-    # vllm_port = config.ajet.debug.debug_vllm_port
+    # vllm_port = config.ajet.debug.debug_port
     vllm_port = args.port
     companion = LaunchCommandWhenAbsent(
         full_argument_list=[

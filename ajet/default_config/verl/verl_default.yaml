@@ -249,7 +249,7 @@ actor_rollout_ref:
     entropy_checkpointing: false
   rollout:
     _target_: verl.workers.config.RolloutConfig
-    name: vllm
+    name: sglang
     mode: async
     nnodes: 0
     n_gpus_per_node: ${oc.select:trainer.n_gpus_per_node,8}
@@ -338,7 +338,7 @@ actor_rollout_ref:
       max_samples_per_step_per_worker: null
     skip_rollout: false
     skip_dump_dir: /tmp/rollout_dump
-    skip_tokenizer_init: true
+    skip_tokenizer_init: false
     enable_rollout_routing_replay: false
     profiler:
       _target_: verl.utils.profiler.ProfilerConfig

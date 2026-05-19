@@ -24,10 +24,12 @@ import numpy as np
 import torch
 from beast_logger import print_dict
 from loguru import logger
+from torch.utils.data import Dataset, Sampler
 from tqdm import tqdm
 from verl import DataProto
 from verl.experimental.agent_loop.agent_loop import AsyncLLMServerManager
 from verl.experimental.dataset.sampler import AbstractCurriculumSampler
+from verl.single_controller.ray import RayWorkerGroup, ResourcePoolManager
 from verl.trainer.config import AlgoConfig
 from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
@@ -36,6 +38,7 @@ from verl.trainer.ppo.metric_utils import (compute_data_metrics,
                                            compute_timing_metrics)
 from verl.trainer.ppo.ray_trainer import (RayPPOTrainer, apply_kl_penalty,
                                           compute_response_mask)
+from verl.trainer.ppo.utils import Role, WorkerType
 from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
@@ -260,6 +263,32 @@ class AjetRayPPOTrainer(RayPPOTrainer):
     """Distributed PPO trainer using Ray for scalable reinforcement learning.
     Slightly modified from RayPPOTrainer in verl.
     """
+
+    def __init__(
+        self,
+        config,
+        tokenizer,
+        role_worker_mapping: dict[Role, WorkerType],
+        resource_pool_manager: ResourcePoolManager,
+        ray_worker_group_cls: type[RayWorkerGroup] = RayWorkerGroup,
+        processor=None,
+        train_dataset: Optional[Dataset] = None,
+        val_dataset: Optional[Dataset] = None,
+        collate_fn=None,
+        train_sampler: Optional[Sampler] = None,
+        device_name=None,
+    ):
+        super().__init__(
+            config, tokenizer, role_worker_mapping, resource_pool_manager, ray_worker_group_cls, processor, train_dataset, val_dataset, collate_fn, train_sampler, device_name
+        )
+        if self.config.algorithm.adv_estimator == "sdpo":
+            self.config.algorithm.adv_estimator = "grpo"
+            self.config.actor_rollout_ref.actor.policy_loss.loss_mode = 'sdpo'
+
+        if self.config.algorithm.adv_estimator == "sdrlvr":
+            self.config.algorithm.adv_estimator = "grpo"
+            self.config.actor_rollout_ref.actor.policy_loss.loss_mode = 'sdpo'
+            self.config.actor_rollout_ref.actor.self_distillation.use_sdrlvr = True
 
     # #######################################
     # init

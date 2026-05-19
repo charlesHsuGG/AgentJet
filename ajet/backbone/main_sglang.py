@@ -15,7 +15,7 @@ from ajet.utils.launch_utils import set_loguru_default_color
 set_loguru_default_color()
 
 
-class TokenAndProbVllmDebug(TokenAndProb):
+class TokenAndProbSglangDebug(TokenAndProb):
     def __init__(self, t):
         # ChatCompletionTokenLogprob(token='token_id:73594', bytes=[96, 96, 96], logprob=-1.9073468138230965e-06, top_logprobs=[])
         token_id = int(t.token.split("token_id:")[-1])
@@ -82,7 +82,7 @@ class ChatCompletionScheduler:
                 "content": message["content"],
                 "tool_calls": message.get("tool_calls", None),
                 "tokens": [
-                    TokenAndProbVllmDebug(t) for t in completion.choices[0].logprobs.content  # type: ignore
+                    TokenAndProbSglangDebug(t) for t in completion.choices[0].logprobs.content  # type: ignore
                 ],
             }
         )
@@ -130,11 +130,12 @@ class ChatCompletionScheduler:
                 "content": message["content"],
                 "tool_calls": message.get("tool_calls", None),
                 "tokens": [
-                    TokenAndProbVllmDebug(t) for t in completion.choices[0].logprobs.content  # type: ignore
+                    TokenAndProbSglangDebug(t) for t in completion.choices[0].logprobs.content  # type: ignore
                 ],
             }
         )
         return messages
+
 
 def run(config):
     from ajet.task_reader import RouterTaskReader
@@ -143,12 +144,12 @@ def run(config):
     warm_up_process(config)
     max_parallel = config.ajet.debug.debug_max_parallel
     n_task = config.ajet.debug.debug_first_n_tasks
-    vllm_port = config.ajet.debug.debug_port
+    sglang_port = config.ajet.debug.debug_port
     enable_swarm_mode = config.ajet.enable_swarm_mode
 
     # --------- init ---------
     async_rollout_manager = ChatCompletionScheduler(
-        config=config, url=f"http://localhost:{vllm_port}/v1"
+        config=config, url=f"http://localhost:{sglang_port}/v1"
     )
     parallel_env = VerlRolloutManager(
         config=config,
@@ -158,7 +159,6 @@ def run(config):
         llm_mode="remote",
         tokenizer=async_rollout_manager.tokenizer,
     )
-
 
     task_reader = RouterTaskReader(
         config.ajet.task_reader.type,
@@ -213,42 +213,41 @@ def main(config):
         max_num_seqs = config.actor_rollout_ref.rollout.max_num_seqs
         max_model_len = config.ajet.rollout.max_model_len
         seed = config.ajet.debug.debug_seed
-        vllm_port = config.ajet.debug.debug_port
+        sglang_port = config.ajet.debug.debug_port
         full_argument_list = [
             sys.executable,
             "-m",
-            "vllm.entrypoints.cli.main",
-            "serve",
+            "sglang.launch_server",
+            "--model-path",
             f"{model_path}",
             "--tensor-parallel-size",
             f"{tensor_parallel_size}",
             "--dtype",
             "auto",
-            "--enforce-eager",
-            "--gpu-memory-utilization",
+            "--disable-cuda-graph",
+            "--mem-fraction-static",
             f"{gpu_memory_utilization}",
             "--disable-custom-all-reduce",
-            "--max-num-seqs",
+            "--max-running-requests",
             f"{max_num_seqs}",
-            "--max-model-len",
+            "--context-length",
             f"{max_model_len}",
             "--load-format",
             "auto",
-            "--enable-chunked-prefill",
             "--enable-prefix-caching",
             "--seed",
             f"{seed}",
             "--port",
-            f"{vllm_port}",
+            f"{sglang_port}",
         ]
         if config.ajet.debug.debug_tool_call_parser:
-            full_argument_list.extend(["--enable-auto-tool-choice", '--tool-call-parser', f"{config.ajet.debug.debug_tool_call_parser}"])
+            full_argument_list.extend(['--tool-call-parser', f"{config.ajet.debug.debug_tool_call_parser}"])
         if config.ajet.debug.debug_reasoing_parser:
             full_argument_list.extend(['--reasoning-parser', f"{config.ajet.debug.debug_reasoing_parser}"])
         companion = LaunchCommandWhenAbsent(
             full_argument_list=full_argument_list,
             dir="./",
-            tag="external_vllm_server",
+            tag="external_sglang_server",
         )
         companion.launch(
             launch_wait_time=1800,

@@ -3,10 +3,10 @@
 import os
 import shutil
 import time
-import yaml
-import hydra.errors
 from functools import cache
 
+import hydra.errors
+import yaml
 from beast_logger import print_dict
 from hydra import compose, initialize
 from loguru import logger
@@ -230,9 +230,9 @@ def read_ajet_hierarchical_config(
             "ajet": {},
             "hydra": {
                 "searchpath": [
-                    "file://ajet/default_config",
-                    "file://ajet/default_config/verl",
-                    "file://ajet/default_config/trinity",
+                    "pkg://ajet/default_config",
+                    "pkg://ajet/default_config/verl",
+                    "pkg://ajet/default_config/trinity",
                 ]
             },
             "defaults": [
@@ -256,17 +256,17 @@ def read_ajet_hierarchical_config(
     if backbone == "debug":
         if "trinity_default" in config["defaults"]:
             config["defaults"].remove("trinity_default")
-            config["hydra"]["searchpath"].remove("file://ajet/default_config/trinity")
+            config["hydra"]["searchpath"].remove("pkg://ajet/default_config/trinity")
     # remove extra config of verl for trinity
     if backbone == "trinity":
         if "verl_default" in config["defaults"]:
             config["defaults"].remove("verl_default")
-            config["hydra"]["searchpath"].remove("file://ajet/default_config/verl")
+            config["hydra"]["searchpath"].remove("pkg://ajet/default_config/verl")
     # remove extra config of trinity for verl
     if backbone == "verl":  # or args.backbone == "debug"
         if "trinity_default" in config["defaults"]:
             config["defaults"].remove("trinity_default")
-            config["hydra"]["searchpath"].remove("file://ajet/default_config/trinity")
+            config["hydra"]["searchpath"].remove("pkg://ajet/default_config/trinity")
 
     if override_param_callback is not None:
         config = override_param_callback(config)

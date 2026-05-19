@@ -9,8 +9,8 @@ def log_empty_content_messages(messages: List[Dict], episode_uuid: str = "") -> 
     whose content is empty/None and which carries no tool_calls.
     """
     for idx, m in enumerate(messages or []):
-        content = m.get("content")
-        tool_calls = m.get("tool_calls") or []
+        content = m.get("content") if isinstance(m, dict) else m.content
+        tool_calls = (m.get("tool_calls") or []) if isinstance(m, dict) else (m.tool_calls if hasattr(m, "tool_calls") else [])
         if content in (None, "") and not tool_calls:
             logger.error(
                 f"[{episode_uuid}] Empty content in inbound message "

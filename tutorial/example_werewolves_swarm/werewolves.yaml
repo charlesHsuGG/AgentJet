@@ -77,8 +77,8 @@ actor_rollout_ref:
 # ------------------ do not edit ------------------
 hydra:
   searchpath:
-    - file://ajet/default_config
-    - file://ajet/default_config/verl
+    - pkg://ajet/default_config
+    - pkg://ajet/default_config/verl
 
 # ------------------ do not edit ------------------
 defaults:

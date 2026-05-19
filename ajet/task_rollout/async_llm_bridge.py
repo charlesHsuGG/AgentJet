@@ -1,32 +1,31 @@
 import copy
 import json
+import os
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Literal, Union, Awaitable
-from typing import TYPE_CHECKING
+from typing import (TYPE_CHECKING, Any, Awaitable, Callable, Dict, List,
+                    Literal, Union)
 
+from agentscope.model import ChatResponse as AgentScopeChatResponse
 from loguru import logger
 from omegaconf import DictConfig
+from openai import AsyncOpenAI
+from openai.types.chat.chat_completion import \
+    ChatCompletion as OpenAIChatCompletion
 from pydantic import BaseModel
-try:
-    from vllm.entrypoints.openai.tool_parsers.hermes_tool_parser import Hermes2ProToolParser
-except:
-    from vllm.tool_parsers.hermes_tool_parser import Hermes2ProToolParser   # vllm 0.17.x moved this class elsewhere
 
-from ajet.utils.async_utils import silence_hermes_tool_parser_loggers
-silence_hermes_tool_parser_loggers()
-from verl.workers.rollout.replica import TokenOutput
-from agentscope.model import ChatResponse as AgentScopeChatResponse
-from openai.types.chat.chat_completion import ChatCompletion as OpenAIChatCompletion
-
-from ajet.schema.logprob import TokenAndProb
-from ajet.utils.tokenizer import ajet_apply_chat_template
-from ajet.schema.convertion import convert_llm_proxy_response_to_oai_response
-from ajet.schema.convertion import convert_llm_proxy_response_to_agentscope_response
 from ajet.context_tracker.multiagent_tracking import MultiAgentContextTracker
+from ajet.schema.convertion import (
+    convert_llm_proxy_response_to_agentscope_response,
+    convert_llm_proxy_response_to_oai_response)
+from ajet.schema.logprob import TokenAndProb
 
 if TYPE_CHECKING:
-    from vllm.entrypoints.openai.protocol import ChatCompletionRequest
+    try:
+        from vllm.entrypoints.openai.protocol import ChatCompletionRequest
+    except ImportError:
+        from sglang.srt.entrypoints.openai.protocol import \
+            ChatCompletionRequest
 
 ChatResponse = Union[OpenAIChatCompletion, AgentScopeChatResponse]
 
@@ -36,6 +35,7 @@ class AjetStandardLlmBridgeRequest(BaseModel):
     custom_sampling_params: dict = {}
     tools: List = []
     request_id: str = ""
+
 
 class AjetStandardLlmBridgeResponse(BaseModel):
     role: str = "assistant"
@@ -63,18 +63,15 @@ class AsyncLlmBridge(object):
         self.tokenizer = tokenizer
         self.llm_mode = llm_mode
         self.max_llm_retries = max_llm_retries
-        self.tool_parser = Hermes2ProToolParser(self.tokenizer)
 
+        self.address_mapping = {server_address: 0 for server_address in self.async_rollout_manager._server_id_to_handle.keys()}
 
     def get_llm_inference_fn_async(self, sampling_params: dict = {}) -> Callable:  # noqa: C901
 
         async def llm_chat_verl(
-            messages: List[Dict[str, str]],
-            custom_sampling_params: dict = {},
-            tools=[],
+            messages: List[Dict[str, str]], custom_sampling_params: dict = {}, tools=[],
             request_id: str = "",
         ) -> dict:
-            request_id = uuid.uuid4().hex
 
             updated_sampling_params = {}
             if sampling_params:
@@ -82,95 +79,63 @@ class AsyncLlmBridge(object):
             if custom_sampling_params:
                 updated_sampling_params.update(custom_sampling_params)
 
-            input_messages = copy.deepcopy(messages)
-            prompt_text = ajet_apply_chat_template(
-                tokenizer=self.tokenizer,
-                conversation=input_messages,
-                tools=tools,
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-            prompt_token_ids = self.tokenizer(prompt_text)["input_ids"]
+            updated_sampling_params["n"] = 1
+            updated_sampling_params["max_completion_tokens"] = self.config.ajet.rollout.max_response_length_in_one_turn
+            updated_sampling_params["temperature"] = self.config.ajet.rollout.val_kwargs.temperature
+            updated_sampling_params["top_k"] = self.config.ajet.rollout.val_kwargs.top_k
+            updated_sampling_params["top_p"] = self.config.ajet.rollout.val_kwargs.top_p
 
-            final_res: TokenOutput = await self.async_rollout_manager.generate(
-                request_id=request_id,
-                prompt_ids=prompt_token_ids,
-                sampling_params=updated_sampling_params,
-            )
+            updated_sampling_params.update({"logprobs": 1, "return_token_ids": True, "return_tokens_as_token_ids": True})
 
-            """response token ids"""
-            token_array = final_res.token_ids
-            logprob_array = final_res.log_probs
-            # routed_experts = final_res.routed_experts
-            # vllm_stop_reason = final_res.stop_reason
-            if "decoded_string" in final_res.extra_fields:
-                decoded_string_array = final_res.extra_fields["decoded_string"]
+            server_address = min(self.address_mapping, key=self.address_mapping.get)
+            client = AsyncOpenAI(base_url=f"http://{server_address}/v1", api_key=os.environ.get("OPENAI_API_KEY", "token-abc123"))
+
+            if tools:
+                completion = await client.chat.completions.create(
+                    model=self.config.ajet.model.path,
+                    messages=messages,
+                    tools=tools,
+                    extra_body=updated_sampling_params,
+                )
             else:
-                decoded_string_array = [self.tokenizer.decode(token_x) for token_x in token_array]
+                completion = await client.chat.completions.create(
+                    model=self.config.ajet.model.path,
+                    messages=messages,
+                    extra_body=updated_sampling_params,
+                )
+            print(completion)
 
-            decoded_text = self.tokenizer.decode(token_array)  # type: ignore
+            message = completion.choices[0].message.model_dump(exclude_unset=True, exclude_none=True)
 
-            if decoded_text.endswith("<|im_end|>"):
-                decoded_text = decoded_text[: -len("<|im_end|>")]
+            token_logprobs = []
+            token_ids = completion.choices[0].token_ids if hasattr(completion.choices[0], "token_ids") else []
+            logprobs = completion.choices[0].logprobs.content if completion.choices[0].logprobs else []
+            if logprobs:
+                for i, logprob in enumerate(logprobs):
+                    token_logprobs.append(TokenAndProb(
+                        token_id=token_ids[i] if i < len(token_ids) else -100,
+                        logprob=logprob.logprob,    # Warning: vllm logprob does not participant training (not reliable enough), for log only.
+                        decoded_string=logprob.token,
+                    ))
 
-            # if tool call, use vLLM tool parser to extract tool calls and validate them
-            tool_calls = None
-            if (
-                ("<tool_call>" in decoded_text)
-                and ("</tool_call>" in decoded_text)
-                and (not self.config.ajet.rollout.force_disable_toolcalls)
-            ):
+            # sometimes tool use message has no content field
+            if "content" not in message:
+                message["content"] = ""
 
-                parsed_tool_calls = self.tool_parser.extract_tool_calls(decoded_text, None)  # type: ignore
-                parsed_tool_calls = parsed_tool_calls.model_dump()
-
-                model_called = parsed_tool_calls["tools_called"]
-                if model_called:
-                    tool_calls = parsed_tool_calls["tool_calls"]
-                    is_bad_toolcall = False
-                    for i in range(len(tool_calls)):
-                        if "function" in tool_calls[i] and "arguments" in tool_calls[i]["function"]:
-                            expect_dict = json.loads(tool_calls[i]["function"]["arguments"])
-                            if not isinstance(expect_dict, dict):
-                                is_bad_toolcall = True
-                    if is_bad_toolcall:
-                        tool_calls = None
-                        decoded_text = decoded_text
-                    else:
-                        decoded_text = parsed_tool_calls["content"]
-                        if decoded_text is None:
-                            decoded_text = ""
-
-            max_response_length_in_one_turn = self.config.ajet.rollout.max_response_length_in_one_turn
-            max_model_len: int = self.config.ajet.rollout.max_model_len
-            max_seq_length: int = max_model_len - max_response_length_in_one_turn
-            if len(prompt_token_ids) >= max_seq_length:
-                finish_reason = "length"
-            else:
-                finish_reason = "stop"
-            if tool_calls:
-                finish_reason = "tool_calls"
             usage = {
-                "prompt_tokens": len(prompt_token_ids),
-                "completion_tokens": len(token_array), # type: ignore
-                "total_tokens": len(prompt_token_ids) + len(token_array), # type: ignore
+                "prompt_tokens": completion.usage.prompt_tokens if completion.usage else None,
+                "completion_tokens": completion.usage.completion_tokens if completion.usage else None,  # type: ignore
+                "total_tokens": completion.usage.total_tokens if completion.usage else None,  # type: ignore
             }
             # from ajet import bp; bp("DECODE")
             return {
-                "role": "assistant",
+                "role": message["role"],
                 "request_id": request_id,
-                "content": decoded_text,
-                "tool_calls": tool_calls,
-                "finish_reason": finish_reason,
+                "content": message["content"],
+                "tool_calls": message.get("tool_calls", []),
+                "finish_reason": completion.choices[0].finish_reason,
                 "usage": usage,
-                "tokens": [
-                    TokenAndProb(
-                        token_id=token_id,
-                        logprob=logprob,    # Warning: vllm logprob does not participant training (not reliable enough), for log only.
-                        decoded_string=decoded_string,
-                    )
-                    for token_id, logprob, decoded_string in zip(token_array, logprob_array, decoded_string_array)  # type: ignore
-                ],
+                "tokens": token_logprobs,
             }
 
 

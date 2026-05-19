@@ -10,38 +10,44 @@ A shadow FastAPI server for serving as interchange endpoint between Tuner and Wo
 """
 
 import asyncio
-import threading
-import uuid
-import time
-
+import atexit
 import base64
 import json
 import os
-import zmq
-import uvicorn
-import atexit
-import httpx
-
-from loguru import logger
-from pydantic import BaseModel
-from functools import lru_cache
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse
-from contextlib import asynccontextmanager
-from multiprocessing import Manager, Process
+import threading
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from functools import lru_cache
+from multiprocessing import Manager, Process
 from typing import Coroutine, Optional, Tuple
 
-from vllm.entrypoints.openai.protocol import ChatCompletionRequest
+import httpx
+import uvicorn
+import zmq
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from loguru import logger
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
-from openai.types.chat.chat_completion_chunk import ChoiceDelta, ChoiceDeltaToolCall, ChoiceDeltaToolCallFunction
+from openai.types.chat.chat_completion_chunk import (
+    ChoiceDelta, ChoiceDeltaToolCall, ChoiceDeltaToolCallFunction)
+from openai.types.chat.chat_completion_message_param import \
+    ChatCompletionMessageParam
+from pydantic import BaseModel
 
-from ajet.utils.networking import get_host_ip
+from ajet.tuner_lib.experimental.interchange_utils import (API_KEY_PREFIX,
+                                                           DEBUG, VERBOSE,
+                                                           EpisodeStatus)
 from ajet.utils.message_utils import log_empty_content_messages
-from ajet.tuner_lib.experimental.interchange_utils import EpisodeStatus
-from ajet.tuner_lib.experimental.interchange_utils import DEBUG, VERBOSE, API_KEY_PREFIX
+from ajet.utils.networking import get_host_ip
+
+try:
+    from vllm.entrypoints.openai.protocol import ChatCompletionRequest
+except ImportError:
+    from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 
 class InterchangeCompletionRequest(BaseModel):
@@ -52,6 +58,7 @@ class InterchangeCompletionRequest(BaseModel):
     timeline_uuid: str
     preserve_sampling_params: bool = False
 
+
 class HealthCheckRequest(BaseModel):
     agent_name: str
     target_tag: str
@@ -59,15 +66,18 @@ class HealthCheckRequest(BaseModel):
     timeline_uuid: str
     health_check: bool = True
 
+
 # Create FastAPI app
 SERVER_SHUTDOWN_EVENT = threading.Event()
 
 context = zmq.Context()
 atexit.register(context.term)
 
+
 @lru_cache(maxsize=128)
 def ep_key(episode_uuid: str) -> str:
     return f"episodes-{episode_uuid}"
+
 
 def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_dict=None, shared_mem_dict_lock=None) -> Tuple[FastAPI, Optional[Coroutine]]:
 
@@ -81,26 +91,27 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
         SERVER_SHUTDOWN_EVENT.set()
         app.state.executor.shutdown(wait=False, cancel_futures=True)
 
-
     app = FastAPI(title="AJet Interchange Endpoint", lifespan=lifespan)
-
 
     def _begin_handle_chat_completion(episode_address, int_req: InterchangeCompletionRequest, episode_uuid):
         """ run this in thread to avoid blocking main event loop
         """
-        if DEBUG: logger.info(f"[server] episode_uuid: {episode_uuid} | Received new chat completion request (inside thread)")
+        if DEBUG:
+            logger.info(f"[server] episode_uuid: {episode_uuid} | Received new chat completion request (inside thread)")
 
         socket = context.socket(zmq.REQ)
-        socket.setsockopt(zmq.RCVTIMEO, 6*1000)  # 6 second recv timeout
+        socket.setsockopt(zmq.RCVTIMEO, 6 * 1000)  # 6 second recv timeout
         socket.connect(f"{episode_address}")
-        if DEBUG: logger.info(f"[server] episode_uuid: {episode_uuid} | connect done")
+        if DEBUG:
+            logger.info(f"[server] episode_uuid: {episode_uuid} | connect done")
 
         # <send to>
         #   <to_sourcefile>: ajet/tuner_lib/experimental/oai_model_client.py
         #   <to_code>: message = self.socket.recv_string()
         socket.send_string(int_req.model_dump_json())
 
-        if DEBUG: logger.info(f"[server] episode_uuid: {episode_uuid} | send_string")
+        if DEBUG:
+            logger.info(f"[server] episode_uuid: {episode_uuid} | send_string")
 
         result_str = ""
         for _ in range(50):  # max 5 minutes wait
@@ -113,7 +124,7 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
 
                 # update activate timestamp and increment llm call counter
                 with shared_mem_dict_lock:
-                    es:EpisodeStatus = shared_mem_dict[ep_key(episode_uuid)]
+                    es: EpisodeStatus = shared_mem_dict[ep_key(episode_uuid)]
                     es.latest_activity_timestamp = time.time()
                     episode_status = es.episode_status
                     shared_mem_dict[ep_key(episode_uuid)] = es
@@ -122,7 +133,8 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
                     raise HTTPException(status_code=404, detail=f"The episode {episode_uuid} is not claimed, cannot accept new requests.")
 
             try:
-                if DEBUG: logger.info(f"[server] episode_uuid: {episode_uuid} | recv_string begin.")
+                if DEBUG:
+                    logger.info(f"[server] episode_uuid: {episode_uuid} | recv_string begin.")
 
                 # <wait for>:
                 #   <from_sourcefile>: ajet/tuner_lib/experimental/oai_model_client.py
@@ -136,18 +148,19 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
                 if enable_swarm_mode:
                     assert shared_mem_dict is not None
                     if shared_mem_dict['engine_status'] not in ["ENGINE.ROLLING", "ENGINE.ROLLING_POST"]:
-                        raise HTTPException(status_code=404, detail="The server is not in ENGINE.ROLLING status, cannot accept new requests.")
+                        raise HTTPException(status_code=404, detail="The server is not in ENGINE.ROLLING status, cannot accept new requests.") from e
 
-                if DEBUG: logger.info(f"[server] episode_uuid: {episode_uuid} | recv_string timeout, retrying.")
+                if DEBUG:
+                    logger.info(f"[server] episode_uuid: {episode_uuid} | recv_string timeout, retrying.")
                 continue
 
         if not result_str:
             raise RuntimeError(f"Failed to get response from episode_address: {episode_address} after 5 attempts.")
         else:
-            if DEBUG: logger.success(f"[server] episode_uuid: {episode_uuid} | recv_string done.")
+            if DEBUG:
+                logger.success(f"[server] episode_uuid: {episode_uuid} | recv_string done.")
         result_object = ChatCompletion(**json.loads(result_str))
         return result_object
-
 
     async def mock_as_stream_response(result: ChatCompletion):
         """
@@ -168,7 +181,7 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
         # except:
         #     thinking = None
         tool_calls = result.choices[0].message.tool_calls if result.choices and result.choices[0].message.tool_calls else None
-        delta_tool_calls = [] # tool_calls: Optional[List[ChoiceDeltaToolCall]] = None
+        delta_tool_calls = []  # tool_calls: Optional[List[ChoiceDeltaToolCall]] = None
         finish_reason = result.choices[0].finish_reason
         usage = result.usage
         if tool_calls:
@@ -176,8 +189,8 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
                 index=index,
                 id=tc.id,
                 function=ChoiceDeltaToolCallFunction(
-                    name = tc.function.name,
-                    arguments = tc.function.arguments,
+                    name=tc.function.name,
+                    arguments=tc.function.arguments,
                 ),
                 type=tc.type
             ) for index, tc in enumerate(tool_calls)]
@@ -243,11 +256,9 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
         yield dump_chunk(final_chunk)
         yield "data: [DONE]\n\n"
 
-
     @app.get("/health")
     async def health():
         return {"status": "ok"}
-
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request, authorization: str = Header(None)):
@@ -276,18 +287,12 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
         except Exception as e:
             return HTTPException(status_code=401, detail=f"Invalid authorization header: {str(e)}")
 
-        if VERBOSE: logger.info(f"Running [{episode_uuid}]: /v1/chat/completions")
+        if VERBOSE:
+            logger.info(f"Running [{episode_uuid}]: /v1/chat/completions")
 
         # Parse request body
         body = await request.json()
         new_req = ChatCompletionRequest.model_validate(body)
-
-        # Check if the first message is a system message, if not, add a default one
-        if new_req.messages:
-            first_msg = new_req.messages[0]
-            if first_msg.get("role") != "system":
-                logger.warning(f"First message role is '{first_msg.get('role')}', expected 'system'. Adding default system prompt.")
-                new_req.messages.insert(0, {"role": "system", "content": "You are a helpful assistant, your name is AgentJet."})
 
         # Detect empty-content messages in the inbound request
         log_empty_content_messages(new_req.messages, episode_uuid=episode_uuid)
@@ -313,7 +318,7 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
 
             # update activate timestamp and increment llm call counter
             with shared_mem_dict_lock:
-                es:EpisodeStatus = shared_mem_dict[ep_key(episode_uuid)]
+                es: EpisodeStatus = shared_mem_dict[ep_key(episode_uuid)]
                 es.latest_activity_timestamp = time.time()
                 es.llm_call_count += 1
                 shared_mem_dict[ep_key(episode_uuid)] = es
@@ -328,14 +333,15 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
 
         # Add to received queue
         int_req = InterchangeCompletionRequest(
-            completion_request = new_req,
-            agent_name = agent_name,
-            target_tag = target_tag,
-            episode_uuid = episode_uuid,
-            timeline_uuid = timeline_uuid,
-            preserve_sampling_params = preserve_sampling_params,
+            completion_request=new_req,
+            agent_name=agent_name,
+            target_tag=target_tag,
+            episode_uuid=episode_uuid,
+            timeline_uuid=timeline_uuid,
+            preserve_sampling_params=preserve_sampling_params,
         )
-        if DEBUG: logger.info(f"episode_uuid: {episode_uuid} | Received new chat completion request (outside thread)")
+        if DEBUG:
+            logger.info(f"episode_uuid: {episode_uuid} | Received new chat completion request (outside thread)")
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(request.app.state.executor, _begin_handle_chat_completion, episode_address, int_req, episode_uuid)
 
@@ -352,9 +358,9 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
 
         return result
 
-
     if enable_swarm_mode:
-        from ajet.tuner_lib.experimental.swarm_server import register_enable_swarm_mode_routes
+        from ajet.tuner_lib.experimental.swarm_server import \
+            register_enable_swarm_mode_routes
 
         @app.post("/replay_latest_llm_call")
         async def replay_latest_llm_call():
@@ -372,19 +378,7 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
 
         additional_coro = None
 
-
     return app, additional_coro
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _bind_reuseport_socket(host: str, port: int):
@@ -512,18 +506,6 @@ class InterchangeServer(Process):
                 raise e
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 # Convenience function for quick server startup
 def start_interchange_server(config, blocking=False, env={}) -> int:
     # Read config
@@ -589,7 +571,8 @@ def start_interchange_server(config, blocking=False, env={}) -> int:
 
     # register a termination handler
     if interchange_server:
-        if DEBUG: logger.info(f"Interchange server subprocess started on port {port} (pid: {interchange_server.pid})")
+        if DEBUG:
+            logger.info(f"Interchange server subprocess started on port {port} (pid: {interchange_server.pid})")
         atexit.register(lambda: interchange_server.terminate())
 
     if not blocking:
@@ -605,12 +588,15 @@ def start_interchange_server(config, blocking=False, env={}) -> int:
                 interchange_server.join()
         except KeyboardInterrupt:
             logger.info("Shutting down interchange server...")
-            try: _httpx_client.post(f"http://127.0.0.1:{port}/stop_engine", timeout=8).status_code
-            except Exception: pass
+            try:
+                _httpx_client.post(f"http://127.0.0.1:{port}/stop_engine", timeout=8).status_code
+            except Exception:
+                pass
 
             if interchange_server:
                 interchange_server.terminate()
             if enable_swarm_mode:
-                from ajet.tuner_lib.experimental.swarm_server import kill_process_tree
+                from ajet.tuner_lib.experimental.swarm_server import \
+                    kill_process_tree
                 kill_process_tree(None, None)
         return -1

@@ -73,8 +73,8 @@ ajet:
 # ------------------ do not edit ------------------
 hydra:
   searchpath:
-    - file://ajet/default_config
-    - file://ajet/default_config/verl         # verl only
+    - pkg://ajet/default_config
+    - pkg://ajet/default_config/verl         # verl only
 
 # ------------------ do not edit ------------------
 defaults:

@@ -20,7 +20,7 @@ NON_TRAIN_AUTHORS = [
     "memory",
     "llm(do_not_train)",
 ]
-DUMMY_MSG = [{"role": "assistant", "content": "dummy text"}]
+DUMMY_MSG = [{"role": "user", "content": "dummy text"}]
 
 
 def find_sublist_indices(large_list, small_list, reverse=False):
@@ -112,12 +112,12 @@ class ExtendedMessage:
             )
 
     def auto_tokenize(self, tokenizer, tools):
-        if (not self.first_message) and (self.role == "system"):
-            raise ValueError("The system message is usually the first message, check program bugs.")
-        elif (self.first_message) and (self.role != "system"):
-            raise ValueError(
-                "The first message is supposed to be the system message, check program bugs, or remove this warning."
-            )
+        # if (not self.first_message) and (self.role == "system"):
+        #     raise ValueError("The system message is usually the first message, check program bugs.")
+        # elif (self.first_message) and (self.role != "system"):
+        #     raise ValueError(
+        #         "The first message is supposed to be the system message, check program bugs, or remove this warning."
+        #     )
         if not self.first_message:
             self.token_arr = self.auto_tokenize_non_first_message(tokenizer=tokenizer, tools=tools)
         else:

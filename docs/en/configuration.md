@@ -649,7 +649,7 @@ Active only when `backbone: debug`. Connects to an external OpenAI-compatible en
 - **Default:** `2`.
 - **Description:** Number of tasks to process from the dataset in debug mode. Uses simple slicing (`tasks[:n]`)—no randomization or weighted sampling. Deterministic task selection for reproducible debugging. Set to `1` for focused single-task debugging, increase for broader coverage.
 
-### `ajet.debug.debug_vllm_port`
+### `ajet.debug.debug_port`
 
 - **Type:** int.
 - **Default:** `18000`.
