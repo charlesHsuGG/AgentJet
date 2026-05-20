@@ -494,8 +494,8 @@ class DynamicRolloutManager(BaseRolloutManager):
                 completed_tasks_details=completed_tasks_details,
                 completed_tasks_rewards=completed_tasks_rewards,
             )
+            instruction = http_update_rollout_pool_information_and_fetch_instruction(self.config, pool_info)
             if accept_client_control:
-                instruction = http_update_rollout_pool_information_and_fetch_instruction(self.config, pool_info)
                 if instruction is not None:
                     latest_swarm_client_instructions["swarm_clients"] = instruction
             return
@@ -650,7 +650,7 @@ class VerlRolloutManager(DynamicRolloutManager):
         messages = []
         step_reward_scores = []
         task_ids = []
-        rollout_ids = []
+        episode_uuids = []
         reference_advantage = []
 
         for sample in samples:
@@ -662,7 +662,7 @@ class VerlRolloutManager(DynamicRolloutManager):
             ), f"Sample has mismatched lengths: {len(sample.input_ids)=}, {len(sample.attention_mask)=}, {len(sample.position_ids)=}, {len(sample.loss_mask)=}"
 
             task_ids.append(sample.task_id)
-            rollout_ids.append(sample.task_tag)
+            episode_uuids.append(sample.episode_uuid)
             if len(sample.prompt_ids) > self.config.ajet.data.max_prompt_length:
                 raise RuntimeError(f"Sample has prompt_ids length {len(sample.prompt_ids)} ")
 
@@ -787,7 +787,7 @@ class VerlRolloutManager(DynamicRolloutManager):
             batch=batch,
             non_tensor_batch={
                 "task_ids": np.array(task_ids),
-                "rollout_ids": np.array(rollout_ids),
+                "episode_uuids": np.array(episode_uuids),
                 "messages": np.array(messages),
                 "reward_scores": np.array(step_reward_scores),
                 "reference_advantage": np.array(reference_advantage),

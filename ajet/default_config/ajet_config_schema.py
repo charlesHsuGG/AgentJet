@@ -1,3 +1,7 @@
+# -------------------------- WARNING --------------------------
+# All default values in this file are ONLY for reference and will NOT be really used!
+
+
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
@@ -15,6 +19,7 @@ class AjetOptim:
 @dataclass
 class AjetTrainerCommon:
     n_gpus_per_node: int = 8
+    nnodes: int = 1
     algorithm: AjetAlgorithm = field(default_factory=AjetAlgorithm)
     optim: AjetOptim = field(default_factory=AjetOptim)
     use_kl_loss: bool = True
@@ -29,7 +34,21 @@ class AjetTrainerCommon:
     total_epochs: int = 50
     val_pass_n: int = 4
     val_before_train: bool = False
-
+    # When enabled, every sample produced by the same episode (same
+    # non_tensor_batch["episode_uuids"]) gets its loss weight multiplied by
+    # 1/N (N = number of samples in that episode) so each episode contributes
+    # equally to the policy-gradient update regardless of how many samples it
+    # generated. Disabled by default (current behaviour: every sample weighted
+    # equally).
+    loss_weight_normalization_episode_level: bool = False
+    # When enabled, GRPO group statistics (baseline mean / std) are computed at
+    # episode scope instead of sample scope: each episode (same
+    # non_tensor_batch["episode_uuids"]) is first reduced to its mean reward,
+    # then the per-task (same non_tensor_batch["uid"]) baseline is the mean over
+    # those episode means. This makes every episode contribute equally to the
+    # advantage baseline regardless of how many samples it generated. Disabled
+    # by default (current behaviour: baseline is the mean over all samples).
+    advantage_estimation_episode_level: bool = False
 
 @dataclass
 class AjetModel:
@@ -70,7 +89,7 @@ class AjetInterchangeServer:
     interchange_server_port: Any = "auto"
     num_fastapi_process: int = 1
     max_fastapi_threads: int = 512
-    max_inference_tracker_threads: int = 128
+    max_inference_tracker_threads: int = 256
     already_started: bool = False
 
 
@@ -120,6 +139,7 @@ class AjetDefaultConfig:
     data: AjetData = field(default_factory=AjetData)
     rollout: AjetRollout = field(default_factory=AjetRollout)
     trainer_common: AjetTrainerCommon = field(default_factory=AjetTrainerCommon)
+    trainer_verl: Dict[str, Any] = field(default_factory=dict)
     task_reader: AjetTaskReader = field(default_factory=AjetTaskReader)
     lora: AjetLora = field(default_factory=AjetLora)
     context_tracker: AjetContextTracker = field(default_factory=AjetContextTracker)

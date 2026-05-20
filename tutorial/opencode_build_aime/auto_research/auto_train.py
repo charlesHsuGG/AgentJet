@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 AIME Math Swarm Training - Auto Research Client
-Configurable for batch_size and max_response_length_in_one_turn experiments
+Configurable for batch_size, max_response_length_in_one_turn, and KL-regularization experiments
+
+python -m tutorial.opencode_build_aime.auto_research.auto_train
 """
 
 import os
@@ -13,7 +15,7 @@ from urllib.parse import urlparse
 from ajet.schema.task import Task
 from ajet.copilot.job import AgentJetJob
 from ajet.task_reader import RouterTaskReader, HuggingFaceTaskReader
-from ajet.utils.thread_executors import TaskCountLimitedThreadPoolExecutor
+from ajet.utils.thread_executors import PeriodicDrainThreadPoolExecutor
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from ajet.default_config.ajet_config_schema import AjetTaskReader, HuggingfaceDatRepo
 from ajet.tuner_lib.experimental.swarm_client import SwarmClient
@@ -22,7 +24,7 @@ from tutorial.opencode_build_aime import download_data
 from tqdm import tqdm
 
 
-DEFAULT_PROJECT_NAME = "subject12_aime_kl_reward_study"
+DEFAULT_PROJECT_NAME = "subject14_aime_baseline_group_8_bs32"
 
 
 def extract_swarm_port(swarm_url: str) -> int:
@@ -69,21 +71,27 @@ class AIMEAutoResearchTrainer:
         max_response_length_in_one_turn: int,
         experiment_name: str,
         result_dir: str,
-        swarm_url: str = None,
-        project_name: str = DEFAULT_PROJECT_NAME,
-        resolved_yaml_path: str | None = None,
-        prepare_only: bool = False,
-        max_prompt_length: int = 3000,
-        max_response_length: int = 15000,
-        max_model_len: int = 18000,
-        total_training_steps: int = 60,
-        n_gpu: int = 8,
-        max_env_worker: int = 128,
-        eval_interval: int = 10,
-        eval_k: int = 4,
-        grpo_repeat: int = 8,
-        ppo_epochs: int = 1,
-        mini_batch_num: int = 1,
+        swarm_url: str,
+        project_name: str,
+        resolved_yaml_path: str | None,
+        prepare_only: bool,
+        max_prompt_length: int,
+        max_response_length: int,
+        max_model_len: int,
+        total_training_steps: int,
+        n_gpu: int,
+        nnodes: int,
+        max_env_worker: int,
+        eval_interval: int,
+        eval_k: int,
+        grpo_repeat: int,
+        ppo_epochs: int,
+        mini_batch_num: int,
+        use_kl_loss: bool,
+        use_kl_in_reward: bool,
+        kl_penalty_type: str,
+        loss_weight_normalization_episode_level: bool,
+        advantage_estimation_episode_level: bool,
     ):
         self.swarm_url = swarm_url or os.getenv("AJET_SWARM_URL", "http://localhost:10086")
         self.batch_size = batch_size
@@ -98,6 +106,7 @@ class AIMEAutoResearchTrainer:
         self.max_model_len = max_model_len
         self.total_training_steps = total_training_steps
         self.n_gpu = n_gpu
+        self.nnodes = nnodes
 
         data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
         self.train_dataset = os.path.join(data_dir, "dapo-math-17k.parquet")
@@ -116,6 +125,9 @@ class AIMEAutoResearchTrainer:
         self.grpo_n = grpo_repeat
         self.ppo_epochs = ppo_epochs
         self.mini_batch_num = mini_batch_num
+        self.use_kl_loss = use_kl_loss
+        self.use_kl_in_reward = use_kl_in_reward
+        self.kl_penalty_type = kl_penalty_type
         self.max_env_worker = max_env_worker
 
         os.makedirs(result_dir, exist_ok=True)
@@ -134,18 +146,23 @@ class AIMEAutoResearchTrainer:
             experiment_name=experiment_name,
             max_env_worker=max_env_worker,
             n_gpu=n_gpu,
+            nnodes=nnodes,
             model=model_path,
             batch_size=batch_size,
             swarm_mode=True,
-            swarm_mode_sample_collection_method="rollout_until_finish_enough_non_dummy_tasks",
+            swarm_mode_sample_collection_method="rollout_until_all_clients_agree_sync_weight",
             num_repeat=grpo_repeat,
             ppo_epochs=ppo_epochs,
             mini_batch_num=mini_batch_num,
+            use_kl_loss=use_kl_loss,
+            use_kl_in_reward=use_kl_in_reward,
+            kl_penalty_type=kl_penalty_type,
             logging="swanlab",
             max_prompt_length=max_prompt_length,
             max_response_length=max_response_length,
             max_response_length_in_one_turn=max_response_length_in_one_turn,
             max_model_len=max_model_len,
+            compute_madness_checklist=["nonsense", "un-paired-think"],
             val_print_to_markdown_file_path=os.path.join(result_dir, "val_results.md"),
             train_print_to_markdown_file_path=os.path.join(result_dir, "train_results.md"),
             total_training_steps=total_training_steps,
@@ -156,6 +173,8 @@ class AIMEAutoResearchTrainer:
         self.ajet_job.config.ajet.trainer_common.save_freq = 10**9
         self.ajet_job.config.ajet.trainer_common.total_epochs = 10000
         self.ajet_job.config.ajet.trainer_common.val_pass_n = eval_k
+        self.ajet_job.config.ajet.trainer_common.loss_weight_normalization_episode_level = loss_weight_normalization_episode_level
+        self.ajet_job.config.ajet.trainer_common.advantage_estimation_episode_level = advantage_estimation_episode_level
         # Swarm mode cannot enable val_before_train, so the script runs an explicit step-0 eval instead.
         self.ajet_job.config.ajet.trainer_common.val_before_train = False
 
@@ -178,7 +197,7 @@ class AIMEAutoResearchTrainer:
             )
         )
 
-        self.swarm_worker = SwarmClient(self.swarm_url, verbose=False)
+        self.swarm_worker = SwarmClient(self.swarm_url, verbose=False, agentjet_job=self.ajet_job)
         self.swarm_worker.auto_sync_train_config_and_start_engine(
             self.ajet_job,
             force_restart=os.getenv("AJET_SWARM_RESTART", "0") == "1"
@@ -276,6 +295,7 @@ class AIMEAutoResearchTrainer:
             val_result_path = os.path.join(self.result_dir, "val_results.md")
             with open(val_result_path, "a") as f:
                 f.write(f"\n## Step {n_global_step}\n")
+                f.write(f"- dataset: {label}\n")
                 f.write(f"- pass_n: {k}\n")
                 f.write(f"- total_tasks: {len(per_task_rewards)}\n")
                 f.write(f"- num_all_success_tasks: {num_all_success_tasks}\n")
@@ -290,22 +310,26 @@ class AIMEAutoResearchTrainer:
 
     def train(self):
         assert self.swarm_worker is not None and self.dataset is not None, "setup() must be called before train()"
-        self.run_eval(0)
+        if not os.getenv("SKIP_INITIAL_EVAL", False): self.run_eval(0)
 
-        max_parallel = 64
-        executor = TaskCountLimitedThreadPoolExecutor(
-            max_parallel_groups=self.batch_size,
-            max_workers=max_parallel,
+        max_parallel = 128
+        executor = PeriodicDrainThreadPoolExecutor(
+            workers=self.batch_size * self.grpo_n,
+            max_parallel=max_parallel,
             auto_retry=True,
         )
-        self.swarm_worker.add_entering_weight_sync_callback(executor.on_entering_weight_sync)
 
         num_epochs = 10000
         last_eval_step = 0
         for epoch in range(num_epochs):
             for _, task in enumerate(self.dataset.generate_training_tasks()):
-                args_list = [{"task": task} for _ in range(self.grpo_n)]
-                executor.submit_group(task_id=task.task_id, fn=self.rollout, args_list=args_list)
+                for _ in range(self.grpo_n):
+                    _, drained_results = executor.submit_with_periodic_drain(
+                        fn=self.rollout, task=task
+                    )
+                    if drained_results:
+                        # when `self.batch_size * self.grpo_n` episode has completed
+                        self.swarm_worker.agree_sync_weight()
 
                 n_global_step = self.swarm_worker.get_global_step()
 
@@ -336,7 +360,7 @@ class AIMEAutoResearchTrainer:
 
 def main():
     parser = argparse.ArgumentParser(description="AIME Auto Research Swarm Training")
-    parser.add_argument("--batch-size", default=32, type=int, required=True, help="Training batch size")
+    parser.add_argument("--batch-size", default=16, type=int, required=True, help="Training batch size")
     parser.add_argument("--experiment-name", type=str, required=True,
                         help="Experiment name for this run")
     parser.add_argument("--result-dir", type=str, required=True,
@@ -349,7 +373,7 @@ def main():
                         help="Optional output path for the fully resolved swarm config yaml")
     parser.add_argument("--prepare-only", action="store_true",
                         help="Build the config, dump the resolved yaml, and exit without training")
-    parser.add_argument("--max-response-length-in-one-turn", type=int, default=12000,
+    parser.add_argument("--max-response-length-in-one-turn", type=int, default=10000,
                         help="Max response length in one turn")
     parser.add_argument("--max-prompt-length", type=int, default=3000,
                         help="Maximum prompt length")
@@ -357,10 +381,12 @@ def main():
                         help="Maximum total response length")
     parser.add_argument("--max-model-len", type=int, default=23000,
                         help="Maximum total model context length")
-    parser.add_argument("--total-training-steps", type=int, default=120,
+    parser.add_argument("--total-training-steps", type=int, default=100,
                         help="Hard cap on total training steps")
     parser.add_argument("--n-gpu", type=int, default=8,
                         help="Number of GPUs reserved for the swarm server")
+    parser.add_argument("--nnodes", type=int, default=1,
+                        help="Number of nodes reserved for training")
     parser.add_argument("--max-env-worker", type=int, default=128,
                         help="Estimated number of parallel environment workers")
     parser.add_argument("--eval-interval", type=int, default=10,
@@ -373,6 +399,22 @@ def main():
                         help="Number of PPO epochs per update")
     parser.add_argument("--mini-batch-num", type=int, default=1,
                         help="Number of mini-batches per PPO update")
+    parser.add_argument("--use-kl-loss", action=argparse.BooleanOptionalAction, default=True,
+                        help="Add KL-divergence regularization to the actor's policy loss "
+                             "(use --no-use-kl-loss to disable)")
+    parser.add_argument("--use-kl-in-reward", action=argparse.BooleanOptionalAction, default=False,
+                        help="Subtract a KL penalty from the reward signal during advantage "
+                             "computation (use --no-use-kl-in-reward to disable)")
+    parser.add_argument("--kl-penalty-type", type=str, default="kl",
+                        choices=["kl", "abs", "mse", "low_var_kl", "full"],
+                        help="KL divergence estimator used for the reward-shaping path "
+                             "when --use-kl-in-reward is enabled")
+    parser.add_argument("--loss-weight-normalization-episode-level", action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help="Weight loss contributions so each episode contributes equally")
+    parser.add_argument("--advantage-estimation-episode-level", action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help="Compute GRPO advantage statistics at episode level")
     args = parser.parse_args()
 
     trainer = AIMEAutoResearchTrainer(
@@ -389,12 +431,18 @@ def main():
         max_model_len=args.max_model_len,
         total_training_steps=args.total_training_steps,
         n_gpu=args.n_gpu,
+        nnodes=args.nnodes,
         max_env_worker=args.max_env_worker,
         eval_interval=args.eval_interval,
         eval_k=args.eval_k,
         grpo_repeat=args.grpo_repeat,
         ppo_epochs=args.ppo_epochs,
         mini_batch_num=args.mini_batch_num,
+        use_kl_loss=args.use_kl_loss,
+        use_kl_in_reward=args.use_kl_in_reward,
+        kl_penalty_type=args.kl_penalty_type,
+        loss_weight_normalization_episode_level=args.loss_weight_normalization_episode_level,
+        advantage_estimation_episode_level=args.advantage_estimation_episode_level,
     )
     trainer.run()
 

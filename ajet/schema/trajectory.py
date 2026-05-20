@@ -50,6 +50,7 @@ class Sample(BaseModel):
     task_batch_index: int = 0
     task_id: str = ""
     task_tag: str = ""
+    episode_uuid: str = ""
     messages: List[dict] = []
     extras: Dict[str, Any] = {}
     input_ids: List[int] = []
