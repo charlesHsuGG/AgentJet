@@ -25,26 +25,25 @@ Usage:
 
 """
 
-import os
-import uuid
-import random
 import asyncio
-import httpx
 import json
+import os
+import random
 import threading
+import uuid
 from contextlib import asynccontextmanager
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Request, HTTPException
+import httpx
+from beast_logger import print_listofdict
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
-from ajet.schema.task import Task, WorkflowOutput
 from ajet.copilot.job import AgentJetJob
+from ajet.schema.task import Task, WorkflowOutput
 from ajet.tuner_lib.experimental.swarm_client import SwarmClient
-from beast_logger import print_listofdict
-
 
 # =============================================================================
 # Configuration Constants
@@ -73,6 +72,7 @@ ajet_job = AgentJetJob(
 # =============================================================================
 # Pydantic Models
 # =============================================================================
+
 
 class EpisodeResult(BaseModel):
     """Result from a single episode execution."""
@@ -395,7 +395,6 @@ async def handle_one2many_request(request: Request, request_id: str) -> Dict | L
     all_answers = [extract_assistant_message(r.response) for r in valid_results]
     rewards = await on_compute_relative_reward(valid_results, all_answers)
 
-
     # Finalize episodes with rewards
     await finalize_episodes(task, valid_results, rewards)
 
@@ -416,7 +415,6 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"Initializing swarm client with URL: {SWARM_URL}")
     swarm_client = SwarmClient(SWARM_URL)
-
 
     logger.info(f"Syncing train config and starting engine with num_repeat={NUM_REPEAT}")
 

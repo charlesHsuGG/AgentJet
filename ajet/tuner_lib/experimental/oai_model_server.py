@@ -34,8 +34,6 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
 from openai.types.chat.chat_completion_chunk import (
     ChoiceDelta, ChoiceDeltaToolCall, ChoiceDeltaToolCallFunction)
-from openai.types.chat.chat_completion_message_param import \
-    ChatCompletionMessageParam
 from pydantic import BaseModel
 
 from ajet.tuner_lib.experimental.interchange_utils import (API_KEY_PREFIX,

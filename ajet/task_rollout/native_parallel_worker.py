@@ -1,17 +1,17 @@
 """Parallel environment rollout orchestration utilities."""
 
-import os
 import gc
+import os
+import threading
 import time
 import tracemalloc
 from concurrent.futures import Future, ThreadPoolExecutor
+from math import ceil
 from typing import Dict, List, Literal
 from urllib.parse import quote
 
 import numpy as np
 import torch
-import threading
-from math import ceil
 from loguru import logger
 from tensordict import TensorDict
 from torch.nn.utils.rnn import pad_sequence
@@ -19,27 +19,49 @@ from tqdm import tqdm
 from verl import DataProto
 from verl.utils.torch_functional import pad_sequence_to_length
 
+from ajet.context_tracker.single_agent_tracking import \
+    SingleAgentContextTracker
 from ajet.schema.task import Task
 from ajet.schema.trajectory import Sample
-from ajet.utils.async_utils import IterationSafeDict
 from ajet.task_rollout.single_worker import BaseRolloutManager
-from ajet.context_tracker.single_agent_tracking import SingleAgentContextTracker
 from ajet.tuner_lib.experimental.interchange_utils import (
-    http_change_engine_status,
-    http_update_rollout_pool_information,
-    CurrentBatchRolloutPoolInformation,
-)
+    CurrentBatchRolloutPoolInformation, http_change_engine_status,
+    http_update_rollout_pool_information)
+from ajet.utils.async_utils import IterationSafeDict
 
 
 def spawn_thread_shared_observation_window(n_threads) -> Dict[str, List[int | bool | str]]:
     observation_window: Dict[str, List[int | bool | str]] = {
-        "info":      [""    for _ in range(n_threads + 1)],
-        "step":      [0     for _ in range(n_threads)],
-        "stop":      [False for _ in range(n_threads)],
+        "info": ["" for _ in range(n_threads + 1)],
+        "step": [0 for _ in range(n_threads)],
+        "stop": [False for _ in range(n_threads)],
         "hard_stop": [False for _ in range(n_threads)],
-        "token":     [0     for _ in range(n_threads)],
+        "token": [0 for _ in range(n_threads)],
     }
     return observation_window
+
+
+# count tasks to see whether we have reach the finish line for next weight update
+def count_tasks(completed_task_id_map_ct, rollout_n=1) -> Dict[str, int]:
+    total_completed_episodes = 0
+    total_completed_tasks = 0
+    total_completed_non_dummy_tasks = 0
+    for ct_list in completed_task_id_map_ct.values():
+        total_completed_episodes += len(ct_list)
+        task_cmd_reward_array = [
+            tracker.reward_structure.performance_reward for tracker in ct_list
+        ]
+        if (len(ct_list) >= rollout_n):
+            total_completed_tasks += 1
+            all_equal = all(x == task_cmd_reward_array[0] for x in task_cmd_reward_array)
+            if all_equal:
+                continue
+            total_completed_non_dummy_tasks += 1
+    return {
+        "total_completed_episodes": total_completed_episodes,
+        "total_completed_tasks": total_completed_tasks,
+        "total_completed_non_dummy_tasks": total_completed_non_dummy_tasks,
+    }
 
 
 class DynamicRolloutManager(BaseRolloutManager):
@@ -58,7 +80,7 @@ class DynamicRolloutManager(BaseRolloutManager):
         self.current_token = current_token
         self.current_token_count_time = current_time
         token_gen_per_sec_str = (
-            f"{delta_token/delta_time:.2f} tokens/s" if delta_time > 0 else "N/A"
+            f"{delta_token / delta_time:.2f} tokens/s" if delta_time > 0 else "N/A"
         )
 
         for step in observation_window["step"]:
@@ -81,9 +103,8 @@ class DynamicRolloutManager(BaseRolloutManager):
                 print_buf += [f"[finished]:{count} threads"]
         print(f"Rollout progress ({token_gen_per_sec_str}): " + "  //  ".join(print_buf))
 
-
     def _write_swarm_rollout_dynamic_log(self, observation_window):
-        base_exp_dir = self.config.ajet.experiment_dir # {exp-dir}/{experiment_name}
+        base_exp_dir = self.config.ajet.experiment_dir  # {exp-dir}/{experiment_name}
         fp = f"{base_exp_dir}/swarm_rollout.dynamic.log"
         string_buffer = ""
         for info in observation_window["info"]:
@@ -202,7 +223,7 @@ class DynamicRolloutManager(BaseRolloutManager):
         self.current_token_count_time = time.time()
         tracker_array: List[SingleAgentContextTracker] = []
         rollout_n = 1 if mode == "validate" else self.rollout_n
-        observation_window = spawn_thread_shared_observation_window(n_threads=len(tasks)*rollout_n)
+        observation_window = spawn_thread_shared_observation_window(n_threads=len(tasks) * rollout_n)
 
         with ThreadPoolExecutor(max_workers=self.max_parallel) as executor:
             futures: List[Future] = []
@@ -261,7 +282,6 @@ class DynamicRolloutManager(BaseRolloutManager):
 
             return tracker_array
 
-
     def rollout_swarm(  # noqa: C901
         self,
         tasks: List[Task],
@@ -286,42 +306,21 @@ class DynamicRolloutManager(BaseRolloutManager):
         self.current_token_count_time = time.time()
 
         # initialize observation window
-        observation_window = spawn_thread_shared_observation_window(n_threads = n_task * rollout_n)
+        observation_window = spawn_thread_shared_observation_window(n_threads=n_task * rollout_n)
         executor = ThreadPoolExecutor(max_workers=self.max_parallel)
         futures: List[Future] = []
         completed_task_id_map_ct: Dict[str, List[SingleAgentContextTracker]] = IterationSafeDict()
         executor_lock = threading.Lock()
 
-        # count tasks to see whether we have reach the finish line for next weight update
-        def count_tasks(completed_task_id_map_ct):
-            total_completed_episodes = 0
-            total_completed_tasks = 0
-            total_completed_non_dummy_tasks = 0
-            for ct_list in completed_task_id_map_ct.values():
-                total_completed_episodes += len(ct_list)
-                task_cmd_reward_array = [
-                    tracker.reward_structure.performance_reward for tracker in ct_list
-                ]
-                if (len(ct_list) >= rollout_n):
-                    total_completed_tasks += 1
-                    all_equal = all(x == task_cmd_reward_array[0] for x in task_cmd_reward_array)
-                    if all_equal: continue
-                    total_completed_non_dummy_tasks += 1
-            return {
-                "total_completed_episodes": total_completed_episodes,
-                "total_completed_tasks": total_completed_tasks,
-                "total_completed_non_dummy_tasks": total_completed_non_dummy_tasks,
-            }
-
         def enough_sample_stop_condition(completed_task_id_map_ct) -> bool:
             # ajet.swarm_mode_sample_collection_method == "rollout_until_finish_enough_episodes"
-            counts = count_tasks(completed_task_id_map_ct)
+            counts = count_tasks(completed_task_id_map_ct, rollout_n=rollout_n)
             total_completed_episodes = counts["total_completed_episodes"]
             return (total_completed_episodes >= n_batch_task * rollout_n)
 
         def enough_finished_task_stop_condition(completed_task_id_map_ct) -> bool:
             # ajet.swarm_mode_sample_collection_method == "rollout_until_finish_enough_tasks"
-            counts = count_tasks(completed_task_id_map_ct)
+            counts = count_tasks(completed_task_id_map_ct, rollout_n=rollout_n)
             total_completed_episodes = counts["total_completed_episodes"]
             total_completed_tasks = counts["total_completed_tasks"]
             if total_completed_episodes > (self.config.ajet.swarm_mode_sample_collection_max_cached_episodes // 5 * 4):
@@ -381,24 +380,26 @@ class DynamicRolloutManager(BaseRolloutManager):
 
         # communicate with interchange server to stop new episode, and let threads finish current episode, then collect results and shutdown executor
         def stop_all_threads_soft():
-            for k in range(len(observation_window["stop"])): observation_window["stop"][k] = True
+            for k in range(len(observation_window["stop"])):
+                observation_window["stop"][k] = True
             http_change_engine_status(self.config, "ENGINE.ROLLING_POST")
             return
 
         # communicate with interchange server to stop all threads immediately, and shutdown executor without waiting for threads to finish
         def stop_all_threads_hard():
-            for k in range(len(observation_window["hard_stop"])): observation_window["hard_stop"][k] = True
+            for k in range(len(observation_window["hard_stop"])):
+                observation_window["hard_stop"][k] = True
             http_change_engine_status(self.config, "ENGINE.WEIGHT_SYNCING")
             return
 
         # pass a stop condition callback function to each thread, so that threads can check the stop condition whenever it finishes a cycle, this is faster than polling
         def stop_condition_callback(completed_task_id_map_ct):
-            if stop_condition(completed_task_id_map_ct):
+            if stop_condition(completed_task_id_map_ct):  # noqa
                 if not is_already_soft_stopped():
                     stop_all_threads_soft()
-                    update_rollout_result_array_preview(observation_window, completed_task_id_map_ct)
+                    update_rollout_result_array_preview(observation_window, completed_task_id_map_ct)  # noqa
                 return True
-            update_rollout_result_array_preview(observation_window, completed_task_id_map_ct)
+            update_rollout_result_array_preview(observation_window, completed_task_id_map_ct)  # noqa
             return False
 
         # submit initial tasks
@@ -435,9 +436,9 @@ class DynamicRolloutManager(BaseRolloutManager):
                     rewards.append(float(ct.reward_structure.performance_reward))
                 completed_tasks_details[task_id] = episode_uuids
                 completed_tasks_rewards[task_id] = rewards
-            buffer += f"\n"
-            buffer += f"\n"
-            counts = count_tasks(completed_task_id_map_ct)
+            buffer += "\n"
+            buffer += "\n"
+            counts = count_tasks(completed_task_id_map_ct, rollout_n=rollout_n)
             buffer += f"Total completed episodes: {counts['total_completed_episodes']} (target {n_batch_task * rollout_n})\n"
             buffer += f"Total completed tasks: {counts['total_completed_tasks']} (target {n_batch_task})\n"
             buffer += f"Total completed non-dummy tasks: {counts['total_completed_non_dummy_tasks']} (target {n_batch_task})\n"
@@ -469,7 +470,7 @@ class DynamicRolloutManager(BaseRolloutManager):
         while True:
             cnt += 1
             time.sleep(CHECK_STATUS_INTERVAL)
-            if (cnt % ( PRINT_STATUS_INTERVAL//CHECK_STATUS_INTERVAL ) == 0):
+            if (cnt % (PRINT_STATUS_INTERVAL // CHECK_STATUS_INTERVAL) == 0):
                 update_rollout_result_array_preview(observation_window, completed_task_id_map_ct)
                 self.step_status_printer(observation_window)
             self._write_swarm_rollout_dynamic_log(observation_window)
@@ -518,14 +519,12 @@ class DynamicRolloutManager(BaseRolloutManager):
         del stop_condition_callback
         del stop_condition
         del update_rollout_result_array_preview
-        del count_tasks
         # Force garbage collection
         gc.collect()
 
         if self.config.ajet.swarm_mode_sample_collection_method == "rollout_until_finish_enough_non_dummy_tasks":
             tracker_array = self.filter_out_dummy_tasks(tracker_array)
         return tracker_array
-
 
     def rollout(
         self,
@@ -538,20 +537,6 @@ class DynamicRolloutManager(BaseRolloutManager):
             return self.rollout_swarm(tasks, mode, epoch)
         else:
             return self.rollout_static(tasks, mode, epoch)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 class VerlRolloutManager(DynamicRolloutManager):
@@ -751,5 +736,6 @@ class VerlRolloutManager(DynamicRolloutManager):
                 "messages": np.array(messages),
                 "reward_scores": np.array(step_reward_scores),
                 "reference_advantage": np.array(reference_advantage),
+                "raw_prompt": np.array([message["messages"][:-1] for message in messages]),
             },
         )

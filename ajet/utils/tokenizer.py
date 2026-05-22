@@ -20,6 +20,7 @@ def cleanup_messages(messages: List[Dict]) -> List[Dict]:
                     pass
     return messages_copied
 
+
 # Cache storage
 _cache = {}
 _cache_lock = threading.Lock()
@@ -55,12 +56,14 @@ def ajet_apply_chat_template(
             tools,
             add_generation_prompt=add_generation_prompt,
             tokenize=tokenize,
+            return_dict=False,  # Return list for caching to avoid issues with tensor serialization
         )
     else:
         result = tokenizer.apply_chat_template(
             conversation,
             tokenize=tokenize,
             add_generation_prompt=add_generation_prompt,
+            return_dict=False,  # Return list for caching to avoid issues with tensor serialization
         )
 
     # Store in cache with thread safety (implement LRU eviction if cache gets too large)

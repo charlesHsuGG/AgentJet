@@ -16,6 +16,7 @@
 import os
 import uuid
 from collections import defaultdict
+from copy import deepcopy
 from pprint import pprint
 from typing import Any, List, Optional
 
@@ -30,19 +31,21 @@ from verl import DataProto
 from verl.experimental.agent_loop.agent_loop import AsyncLLMServerManager
 from verl.experimental.dataset.sampler import AbstractCurriculumSampler
 from verl.single_controller.ray import RayWorkerGroup, ResourcePoolManager
-from verl.trainer.config import AlgoConfig
-from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
 from verl.trainer.ppo.metric_utils import (compute_data_metrics,
                                            compute_throughout_metrics,
-                                           compute_timing_metrics)
+                                           compute_timing_metrics,
+                                           compute_variance_proxy_metrics)
 from verl.trainer.ppo.ray_trainer import (RayPPOTrainer, apply_kl_penalty,
+                                          compute_advantage,
                                           compute_response_mask)
+from verl.trainer.ppo.reward import extract_reward
 from verl.trainer.ppo.utils import Role, WorkerType
 from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
 from verl.utils.metric import reduce_metrics
+from verl.utils.rollout_skip import RolloutSkip
 
 from ajet.backbone.warm_up import warm_up_process
 from ajet.context_tracker.single_agent_tracking import \
@@ -114,8 +117,7 @@ def parse_reward_from_dataproto(data: DataProto, return_dict=False) -> dict | to
             "reward_tensor": reward_tensor,
             "reward_extra_info": reward_extra_info,
         }
-    else:
-        return reward_tensor
+    return reward_tensor
 
 
 def union_gen_batch_via_task_id(tasks, batch: DataProto, gen_batch_output: DataProto, discard_original_batch=False):
@@ -172,91 +174,6 @@ def import_or_export_data_proto(batch: DataProto, direction: str = "export", fil
         return batch
     else:
         raise ValueError(f"direction must be 'import' or 'export', got '{direction}'")
-
-
-def compute_advantage(
-    data: DataProto,
-    adv_estimator: AdvantageEstimator,
-    gamma: float = 1.0,
-    lam: float = 1.0,
-    num_repeat: int = 1,
-    norm_adv_by_std_in_grpo: bool = True,
-    config: Optional[AlgoConfig] = None,
-) -> DataProto:
-    """Compute advantage estimates for policy optimization.
-
-    This function computes advantage estimates using various estimators like GAE, GRPO, REINFORCE++, etc.
-    The advantage estimates are used to guide policy optimization in RL algorithms.
-
-    Args:
-        data (DataProto): The data containing batched model outputs and inputs.
-        adv_estimator (AdvantageEstimator): The advantage estimator to use (e.g., GAE, GRPO, REINFORCE++).
-        gamma (float, optional): Discount factor for future rewards. Defaults to 1.0.
-        lam (float, optional): Lambda parameter for GAE. Defaults to 1.0.
-        num_repeat (int, optional): Number of times to repeat the computation. Defaults to 1.
-        norm_adv_by_std_in_grpo (bool, optional): Whether to normalize advantages by standard deviation in
-            GRPO. Defaults to True.
-        config (dict, optional): Configuration dictionary for algorithm settings. Defaults to None.
-
-    Returns:
-        DataProto: The updated data with computed advantages and returns.
-    """
-    # Back-compatible with trainers that do not compute response mask in fit
-    if "response_mask" not in data.batch.keys():
-        data.batch["response_mask"] = compute_response_mask(data)
-    # prepare response group
-    if adv_estimator == AdvantageEstimator.GAE:
-        # Compute advantages and returns using Generalized Advantage Estimation (GAE)
-        advantages, returns = core_algos.compute_gae_advantage_return(
-            token_level_rewards=data.batch["token_level_rewards"],
-            values=data.batch["values"],
-            response_mask=data.batch["response_mask"],
-            gamma=gamma,
-            lam=lam,
-        )
-        data.batch["advantages"] = advantages
-        data.batch["returns"] = returns
-        if config.get("use_pf_ppo", False):
-            data = core_algos.compute_pf_ppo_reweight_data(
-                data,
-                config.pf_ppo.get("reweight_method"),
-                config.pf_ppo.get("weight_pow"),
-            )
-    elif adv_estimator == AdvantageEstimator.GRPO:
-        # Initialize the mask for GRPO calculation
-        grpo_calculation_mask = data.batch["response_mask"]
-        # If multi-turn, replace the mask with the relevant part of loss_mask
-        # Get length from the initial response mask
-        response_length = grpo_calculation_mask.size(1)
-        # This mask is the one intended for GRPO
-        grpo_calculation_mask = data.batch["loss_mask"][:, -response_length:]
-        # Call compute_grpo_outcome_advantage with parameters matching its definition
-        advantages, returns = core_algos.compute_grpo_outcome_advantage(
-            token_level_rewards=data.batch["token_level_rewards"],
-            response_mask=grpo_calculation_mask,
-            index=data.non_tensor_batch["uid"],
-            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-        )
-        data.batch["advantages"] = advantages
-        data.batch["returns"] = returns
-    else:
-        # handle all other adv estimator type other than GAE and GRPO
-        adv_estimator_fn = core_algos.get_adv_estimator_fn(adv_estimator)
-        adv_kwargs = {
-            "token_level_rewards": data.batch["token_level_rewards"],
-            "response_mask": data.batch["response_mask"],
-            "config": config,
-        }
-        if "uid" in data.non_tensor_batch:  # optional
-            adv_kwargs["index"] = data.non_tensor_batch["uid"]
-        if "reward_baselines" in data.batch:  # optional
-            adv_kwargs["reward_baselines"] = data.batch["reward_baselines"]
-
-        # calculate advantage estimator
-        advantages, returns = adv_estimator_fn(**adv_kwargs)
-        data.batch["advantages"] = advantages
-        data.batch["returns"] = returns
-    return data
 
 
 class AjetRayPPOTrainer(RayPPOTrainer):
@@ -353,10 +270,8 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                 config.ajet.data.train_batch_size,
                 config.actor_rollout_ref.model,
             )
-        except hydra.errors.InstantiationException:
-            raise ValueError(
-                "You are using an unsupported VERL version. Please read `documents/backbones.md`"
-            )
+        except hydra.errors.InstantiationException as e:
+            raise ValueError("You are using an unsupported VERL version. Please read `documents/backbones.md`") from e
         if not config.actor_rollout_ref.actor.use_dynamic_bsz:
             if self.use_reference_policy:
                 # reference: log_prob_micro_batch_size vs. log_prob_micro_batch_size_per_gpu
@@ -398,9 +313,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
     def init_workers(self):
         super().init_workers()
 
-        self.reward_fn = parse_reward_from_dataproto
-        self.val_reward_fn = parse_reward_from_dataproto
-
         assert hasattr(self.async_rollout_manager, "agent_loop_workers")
         assert len(self.async_rollout_manager.agent_loop_workers) == 1, "Please set `num_workers = 1` in `ajet/default_config/verl/verl_default.yaml`"
 
@@ -422,7 +334,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
         if self.config.ajet.enable_interchange_server:
             if self.config.ajet.enable_swarm_mode:
                 from ajet.tuner_lib.experimental.interchange_utils import \
-                    http_change_engine_status
+                    http_change_engine_status  # pylint: disable=import-outside-toplevel
                 http_change_engine_status(self.config, status, global_step=self.global_steps)
 
     # #######################################
@@ -435,15 +347,16 @@ class AjetRayPPOTrainer(RayPPOTrainer):
 
         warm_up_process(self.config)
 
-        self.verl_logger = Tracking(
-            project_name=self.config.ajet.project_name,
-            experiment_name=self.config.ajet.experiment_name,
+        verl_tracker = Tracking(
+            project_name=self.config.trainer.project_name,
+            experiment_name=self.config.trainer.experiment_name,
             default_backend=self.config.trainer.logger,
             config=OmegaConf.to_container(self.config, resolve=True),
         )
+
         self.global_steps = 0
 
-        # load checkpoint before doing anything
+        # load checkpoint and update weights before doing anything
         self._load_checkpoint()
         self.checkpoint_manager.update_weights(self.global_steps)
         self.checkpoint_manager.sleep_replicas()
@@ -454,47 +367,64 @@ class AjetRayPPOTrainer(RayPPOTrainer):
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        if (self.val_reward_fn is not None) and (self.config.ajet.trainer_common.val_before_train) and (not self.config.ajet.enable_swarm_mode):
+        if self.config.ajet.trainer_common.val_before_train and not self.config.ajet.enable_swarm_mode:
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
-            self.verl_logger.log(data=val_metrics, step=self.global_steps)
+            pprint(f"Initial validation metrics: {val_metrics}")
+            verl_tracker.log(data=val_metrics, step=self.global_steps)
             val_print_to_markdown_file_path = self.config.ajet.trainer_common.val_print_to_markdown_file_path
             if val_print_to_markdown_file_path:
                 os.makedirs(os.path.dirname(val_print_to_markdown_file_path), exist_ok=True)
-                with open(val_print_to_markdown_file_path, mode="a+") as f:
+                with open(val_print_to_markdown_file_path, mode="a+", encoding="utf-8") as f:
                     f.write(str(val_metrics))
                     f.write('\n')
             if self.config.ajet.trainer_common.val_only:
                 return
 
+        if self.config.actor_rollout_ref.rollout.get("skip_rollout", False):
+            rollout_skip = RolloutSkip(self.config, self.async_rollout_manager)
+            rollout_skip.wrap_generate_sequences()
+
         # add tqdm
-        progress_bar = tqdm(
-            total=self.total_training_steps,
-            initial=self.global_steps,
-            desc="Training Progress",
-        )
+        progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
 
         # we start from step 1
         self.global_steps += 1
         last_val_metrics = None
         self.max_steps_duration = 0
 
+        prev_step_profile = False
+        curr_step_profile = (
+            self.global_steps in self.config.global_profiler.steps
+            if self.config.global_profiler.steps is not None
+            else False
+        )
+        next_step_profile = False
+
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
+                if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
+                    self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=False)
+
                 metrics = {}
                 timing_raw = {}
 
+                with marked_timer("start_profile", timing_raw):
+                    self._start_profiling(
+                        not prev_step_profile and curr_step_profile
+                        if self.config.global_profiler.profile_continuous_steps
+                        else curr_step_profile
+                    )
+
                 batch_dict["index"] = torch.tensor(
-                    [i for i in range(len(batch_dict["task_id"]))],
-                    dtype=torch.long,
+                    [i for i in range(len(batch_dict["task_id"]))], dtype=torch.long,
                 )
 
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
 
                 # add uid to batch
                 batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(batch.batch))],
-                    dtype=object,
+                    [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
                 )
 
                 # # pop those keys for generation
@@ -510,11 +440,12 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     batch_keys=batch_keys_to_pop,
                     non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
                 )
+                gen_batch = self._get_gen_batch(gen_batch)
 
                 # pass global_steps to trace
                 gen_batch.meta_info["global_steps"] = self.global_steps
-                is_last_step = self.global_steps >= self.total_training_steps
 
+                is_last_step = self.global_steps >= self.total_training_steps
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     logger.info("rollout step begin")
@@ -524,6 +455,8 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         self.checkpoint_manager.update_weights(self.global_steps)
                         self._update_interchange_server_status_flag("ENGINE.ROLLING")
                         logger.info("wake up end")
+                        if curr_step_profile:
+                            self.async_rollout_manager.start_profile()
                         tasks: List[Task] = [
                             dict_to_ajet_task(dict(
                                 task_id=gen_batch.non_tensor_batch["task_id"][i],
@@ -594,8 +527,13 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         logger.info(
                             f"gen_batch_output.info batch.keys={gen_batch_output.batch.keys()}"
                         )
+                        logger.info(
+                            f"gen_batch_output.info non_tensor_batch.keys={gen_batch_output.non_tensor_batch.keys()}"
+                        )
                         self._update_interchange_server_status_flag("ENGINE.WEIGHT_SYNCING")
                         self.checkpoint_manager.sleep_replicas()
+                        if curr_step_profile:
+                            self.async_rollout_manager.stop_profile()
                     logger.info("rollout step end")
 
                     batch.non_tensor_batch["uid"] = np.array(
@@ -604,6 +542,36 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     )
                     discard_original_batch = self.config.ajet.enable_swarm_mode
                     batch = union_gen_batch_via_task_id(tasks, batch, gen_batch_output, discard_original_batch)
+
+                    if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
+                        with marked_timer("gen_max", timing_raw, color="purple"):
+                            gen_baseline_batch = deepcopy(batch)
+                            gen_baseline_batch.meta_info["do_sample"] = False
+                            if curr_step_profile:
+                                self.async_rollout_manager.start_profile()
+                            gen_baseline_output = self.async_rollout_manager.generate_sequences(gen_baseline_batch)
+                            self.checkpoint_manager.sleep_replicas()
+                            if curr_step_profile:
+                                self.async_rollout_manager.stop_profile()
+                            batch = batch.union(gen_baseline_output)
+                            # compute reward model score on batch
+                            rm_scores = None
+                            if self.use_rm and "rm_scores" not in batch.batch.keys():
+                                batch_reward = self._compute_reward_colocate(batch)
+                                batch = batch.union(batch_reward)
+
+                            # Compute or extract reward for REMAX baseline
+                            reward_baseline_tensor = batch.batch["rm_scores"].sum(dim=-1)
+
+                            keys_to_pop = set(gen_baseline_output.batch.keys())
+                            if rm_scores is not None:
+                                keys_to_pop.update(rm_scores.batch.keys())
+                            batch.pop(batch_keys=list(keys_to_pop))
+
+                            batch.batch["reward_baselines"] = reward_baseline_tensor
+
+                            del rm_scores, gen_baseline_batch, gen_baseline_output
+
                     batch.batch["response_mask"] = compute_response_mask(batch)
 
                     if "response_mask" not in batch.batch.keys():
@@ -620,7 +588,15 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
 
                     with marked_timer("reward", timing_raw, color="yellow"):
-                        reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.config.reward_fn)
+                        # compute reward model score
+                        if self.use_rm and "rm_scores" not in batch.batch.keys():
+                            batch_reward = self._compute_reward_colocate(batch)
+                            batch = batch.union(batch_reward)
+
+                            # extract reward_tensor and reward_extra_infos_dict for training
+                            reward_tensor, reward_extra_infos_dict = extract_reward(batch)
+                        else:
+                            reward_tensor, reward_extra_infos_dict = compute_reward(batch, parse_reward_from_dataproto)
 
                         self_distillation_data = self._maybe_build_self_distillation_batch(
                             batch,
@@ -641,7 +617,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
                     if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
                         from verl.trainer.ppo.rollout_corr_helper import \
-                            apply_bypass_mode
+                            apply_bypass_mode  # pylint: disable=import-outside-toplevel
                         apply_bypass_mode(
                             batch=batch,
                             rollout_corr_config=rollout_corr_config,
@@ -677,7 +653,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                             if "rollout_log_probs" in batch.batch.keys():
                                 # TODO: we may want to add diff of probs too.
                                 from verl.utils.debug.metrics import \
-                                    calculate_debug_metrics
+                                    calculate_debug_metrics  # pylint: disable=import-outside-toplevel
 
                                 metrics.update(calculate_debug_metrics(batch))
 
@@ -722,7 +698,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                             rollout_corr_config is not None and "rollout_log_probs" in batch.batch and not bypass_recomputing_logprobs  # Only in decoupled mode
                         ):
                             from verl.trainer.ppo.rollout_corr_helper import \
-                                compute_rollout_correction_and_add_to_batch
+                                compute_rollout_correction_and_add_to_batch  # pylint: disable=import-outside-toplevel
 
                             # Compute IS weights, apply rejection sampling, compute metrics
                             batch, is_metrics = compute_rollout_correction_and_add_to_batch(batch, rollout_corr_config)
@@ -747,7 +723,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     # update critic
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):
-                            critic_output = self.critic_wg.update_critic(batch)
+                            critic_output = self._update_critic(batch)
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
 
@@ -756,49 +732,72 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             actor_output = self._update_actor(batch)
+
+                        # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
+                        esi_close_to_expiration = should_save_ckpt_esi(
+                            max_steps_duration=self.max_steps_duration,
+                            redundant_time=self.config.trainer.esi_redundant_time,
+                        )
+                        # Check if the conditions for saving a checkpoint are met.
+                        # The conditions include a mandatory condition (1) and
+                        # one of the following optional conditions (2/3/4):
+                        # 1. The save frequency is set to a positive value.
+                        # 2. It's the last training step.
+                        # 3. The current step number is a multiple of the save frequency.
+                        # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
+                        if self.config.trainer.save_freq > 0 and (
+                            is_last_step
+                            or self.global_steps % self.config.trainer.save_freq == 0
+                            or esi_close_to_expiration
+                        ):
+                            if esi_close_to_expiration:
+                                print("Force saving checkpoint: ESI instance expiration approaching.")
+                            with marked_timer("save_checkpoint", timing_raw, color="green"):
+                                self._save_checkpoint()
+
+                        # update weights from trainer to rollout
+                        with marked_timer("update_weights", timing_raw, color="red"):
+                            self.checkpoint_manager.update_weights(self.global_steps)
+
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
 
-                    # validate
-                    if (
-                        self.val_reward_fn is not None
-                        and self.config.trainer.test_freq > 0
-                        and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
-                        and (not self.config.ajet.enable_swarm_mode)
-                    ):
-                        with marked_timer("testing", timing_raw, color="green"):
-                            val_metrics: dict = self._validate()
-                            if is_last_step:
-                                last_val_metrics = val_metrics
-                        metrics.update(val_metrics)
-                        val_print_to_markdown_file_path = self.config.ajet.trainer_common.val_print_to_markdown_file_path
-                        if val_print_to_markdown_file_path:
-                            os.makedirs(os.path.dirname(val_print_to_markdown_file_path), exist_ok=True)
-                            with open(val_print_to_markdown_file_path, mode="a+") as f:
-                                f.write(str(val_metrics))
-                                f.write('\n')
+                    # Log rollout generations if enabled
+                    rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
+                    if rollout_data_dir:
+                        self._log_rollout_data(batch, reward_extra_infos_dict, timing_raw, rollout_data_dir)
 
-                    # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
-                    esi_close_to_expiration = should_save_ckpt_esi(
-                        max_steps_duration=self.max_steps_duration,
-                        redundant_time=self.config.trainer.esi_redundant_time,
+                # validate
+                if (
+                    self.config.trainer.test_freq > 0
+                    and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
+                    and (not self.config.ajet.enable_swarm_mode)
+                ):
+                    with marked_timer("testing", timing_raw, color="green"):
+                        val_metrics: dict = self._validate()
+                        if is_last_step:
+                            last_val_metrics = val_metrics
+                    metrics.update(val_metrics)
+                    val_print_to_markdown_file_path = self.config.ajet.trainer_common.val_print_to_markdown_file_path
+                    if val_print_to_markdown_file_path:
+                        os.makedirs(os.path.dirname(val_print_to_markdown_file_path), exist_ok=True)
+                        with open(val_print_to_markdown_file_path, mode="a+", encoding="utf-8") as f:
+                            f.write(str(val_metrics))
+                            f.write('\n')
+
+                with marked_timer("stop_profile", timing_raw):
+                    next_step_profile = (
+                        self.global_steps + 1 in self.config.global_profiler.steps
+                        if self.config.global_profiler.steps is not None
+                        else False
                     )
-                    # Check if the conditions for saving a checkpoint are met.
-                    # The conditions include a mandatory condition (1) and
-                    # one of the following optional conditions (2/3/4):
-                    # 1. The save frequency is set to a positive value.
-                    # 2. It's the last training step.
-                    # 3. The current step number is a multiple of the save frequency.
-                    # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
-                    if self.config.trainer.save_freq > 0 and (
-                        is_last_step
-                        or self.global_steps % self.config.trainer.save_freq == 0
-                        or esi_close_to_expiration
-                    ):
-                        if esi_close_to_expiration:
-                            logger.info("Force saving checkpoint: ESI instance expiration approaching.")
-                        with marked_timer("save_checkpoint", timing_raw, color="green"):
-                            self._save_checkpoint()
+                    self._stop_profiling(
+                        curr_step_profile and not next_step_profile
+                        if self.config.global_profiler.profile_continuous_steps
+                        else curr_step_profile
+                    )
+                    prev_step_profile = curr_step_profile
+                    curr_step_profile = next_step_profile
 
                 steps_duration = timing_raw["step"]
                 self.max_steps_duration = max(self.max_steps_duration, steps_duration)
@@ -812,33 +811,50 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                 )
                 # collect metrics
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                # GDPO per-component reward metrics
+                gdpo_reward_keys = self.config.algorithm.get("gdpo_reward_keys", None)
+                if gdpo_reward_keys and self.config.algorithm.adv_estimator in ("gdpo", AdvantageEstimator.GDPO):
+                    for key in gdpo_reward_keys:
+                        if key in batch.non_tensor_batch:
+                            vals = np.asarray(batch.non_tensor_batch[key], dtype=np.float32)
+                            metrics[f"gdpo/{key}/mean"] = float(np.mean(vals))
+                            metrics[f"gdpo/{key}/std"] = float(np.std(vals))
+                            metrics[f"gdpo/{key}/max"] = float(np.max(vals))
+                            metrics[f"gdpo/{key}/min"] = float(np.min(vals))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()
-                metrics.update(
-                    compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus)
-                )
+                metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
+                # compute variance proxy metrics
+                gradient_norm = metrics.get("actor/grad_norm", None)
+                metrics.update(compute_variance_proxy_metrics(batch=batch, gradient_norm=gradient_norm))
+                # Note: mismatch metrics (KL, PPL, etc.) are collected at line 1179 after advantage computation
 
                 # this is experimental and may be changed/removed in the future in favor of a general-purpose one
                 if isinstance(self.train_dataloader.sampler, AbstractCurriculumSampler):
                     self.train_dataloader.sampler.update(batch=batch)
 
-                self.verl_logger.log(data=metrics, step=self.global_steps)
+                verl_tracker.log(data=metrics, step=self.global_steps)
                 train_print_to_markdown_file_path = self.config.ajet.trainer_common.train_print_to_markdown_file_path
                 if train_print_to_markdown_file_path:
                     os.makedirs(os.path.dirname(train_print_to_markdown_file_path), exist_ok=True)
-                    with open(train_print_to_markdown_file_path, mode="a+") as f:
+                    with open(train_print_to_markdown_file_path, mode="a+", encoding="utf-8") as f:
                         f.write(str(metrics))
                         f.write('\n')
                 progress_bar.update(1)
                 self.global_steps += 1
 
-                # # when enabled oai request interchange, we need to clear the cache from time to time
-                # if self.config.ajet.enable_interchange_server:
-                #     from ajet.tuner_lib.experimental.oai_model_server import ensure_dat_interchange_server_cache_clear
-                #     ensure_dat_interchange_server_cache_clear()
+                if (
+                    hasattr(self.config.actor_rollout_ref.actor, "profiler")
+                    and self.config.actor_rollout_ref.actor.profiler.tool == "torch_memory"
+                ):
+                    self.actor_rollout_wg.dump_memory_snapshot(
+                        tag=f"post_update_step{self.global_steps}", sub_dir=f"step{self.global_steps}"
+                    )
 
                 if is_last_step:
+                    if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
+                        self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=True)
                     pprint(f"Final validation metrics: {last_val_metrics}")
                     progress_bar.close()
                     return
@@ -846,60 +862,43 @@ class AjetRayPPOTrainer(RayPPOTrainer):
     # #######################################
     # Validate
     # #######################################
-    def _validate(self):
+    def _validate(self, merged: bool = False):
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
 
         # Lists to collect samples for the table
         sample_outputs = []
+        sample_gts = []
         sample_scores = []
         sample_turns = []
+        sample_uids = []
 
         for test_data in self.val_dataloader:
-            test_data["index"] = torch.tensor(
-                [i for i in range(len(test_data["task_id"]))], dtype=torch.long
-            )
+            test_data["index"] = torch.tensor([i for i in range(len(test_data["task_id"]))], dtype=torch.long)
             test_batch = DataProto.from_single_dict(test_data)
 
             # repeat test batch
             test_batch = test_batch.repeat(
-                repeat_times=self.config.ajet.trainer_common.val_pass_n,
-                interleave=True,
+                repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
             )
 
-            # we only do validation on rule-based rm
-            if (
-                self.config.reward_model.enable
-                and test_batch[0].non_tensor_batch["reward_model"]["style"] == "model"
-            ):
-                return {}
+            ground_truths = [
+                item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in test_batch
+            ]
+            sample_gts.extend(ground_truths)
 
             batch_keys_to_pop = ["index"]
             non_tensor_batch_keys_to_pop = [
-                "task_id",
-                "main_query",
-                "env_type",
-                "metadata",
+                "task_id", "main_query", "env_type", "metadata",
                 "init_messages",
             ]
-            if "multi_modal_data" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("multi_modal_data")
-            if "raw_prompt" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("raw_prompt")
-            if "tools_kwargs" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("tools_kwargs")
-            if "interaction_kwargs" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("interaction_kwargs")
-            if "agent_name" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("agent_name")
             if "extras" in test_batch.non_tensor_batch:
                 non_tensor_batch_keys_to_pop.append("extras")
-
             test_gen_batch = test_batch.pop(
-                batch_keys=batch_keys_to_pop,
-                non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
+                batch_keys=batch_keys_to_pop, non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
             )
 
+            test_gen_batch = self._get_gen_batch(test_gen_batch)
             test_gen_batch.meta_info = {
                 "eos_token_id": self.tokenizer.eos_token_id,
                 "pad_token_id": self.tokenizer.pad_token_id,
@@ -942,12 +941,11 @@ class AjetRayPPOTrainer(RayPPOTrainer):
             test_batch.meta_info["validate"] = True
 
             # evaluate using reward_function
-            if self.val_reward_fn is None:
-                raise ValueError("val_reward_fn must be provided for validation.")
-            result = self.val_reward_fn(test_batch, return_dict=True)
+            result = parse_reward_from_dataproto(test_batch, return_dict=True)
             reward_tensor = result["reward_tensor"]
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
+            sample_uids.extend(test_batch.non_tensor_batch["uid"])
 
             reward_extra_infos_dict["reward"].extend(scores)
             logger.info(
@@ -969,9 +967,33 @@ class AjetRayPPOTrainer(RayPPOTrainer):
             )
             break  # hack to escape the loop after one batch
 
-        metric_dict = val_metrics
+        # self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
-        return metric_dict
+        # # dump generations
+        # val_data_dir = self.config.trainer.get("validation_data_dir", None)
+        # if val_data_dir:
+        #     self._dump_generations(
+        #         inputs=sample_inputs,
+        #         outputs=sample_outputs,
+        #         gts=sample_gts,
+        #         scores=sample_scores,
+        #         reward_extra_infos_dict=reward_extra_infos_dict,
+        #         dump_path=val_data_dir,
+        #     )
+
+        for key_info, lst in reward_extra_infos_dict.items():
+            assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
+
+        if merged:
+            print("_merge_validation_results validate result will be merged")
+            return {
+                "data_sources": data_source_lst,
+                "sample_uids": sample_uids,
+                "sample_turns": sample_turns,
+                "reward_extra_infos_dict": reward_extra_infos_dict,
+            }
+        data_sources = np.concatenate(data_source_lst, axis=0)
+        return {**self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns), **val_metrics}
 
     def _rollout_val_dataset(self, target_dataset, target_dataset_name, mode, epoch):
         """
@@ -1063,7 +1085,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
             mod="evaluation",
         )
 
-        self.verl_logger.log(data=val_metrics, step=self.global_steps)
         val_metrics.update({"target_dataset_name": target_dataset_name})
 
         return ctx_trackers, tasks, val_metrics

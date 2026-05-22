@@ -23,7 +23,9 @@ import hydra
 import ray
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import Dataset as TorchDataset
-from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
+from verl.trainer import main_ppo
+from verl.trainer.ppo.utils import need_critic, need_reference_policy
+from verl.utils.config import validate_config
 from verl.utils.dataset.rl_dataset import collate_fn
 from verl.utils.device import is_cuda_available
 
@@ -62,7 +64,7 @@ def run_ppo(config: DictConfig) -> None:
         # Set environment variables in the runtime environment to control tokenizer parallelism,
         # NCCL debug level, VLLM logging level, and allow runtime LoRA updating
         # `num_cpus` specifies the number of CPU cores Ray can use, obtained from the configuration
-        default_runtime_env = get_ppo_ray_runtime_env()
+        default_runtime_env = get_runtime_env(config)
         ray_init_kwargs = config.ray_kwargs.get("ray_init", {})
         runtime_env_kwargs = ray_init_kwargs.get("runtime_env", {})
 
@@ -108,9 +110,7 @@ def run_ppo(config: DictConfig) -> None:
     # Create a remote instance of the TaskRunner class, and
     # Execute the `run` method of the TaskRunner instance remotely and wait for it to complete
     if (
-        is_cuda_available
-        and config.trainer.get("profile_steps") is not None
-        and len(config.trainer.get("profile_steps", [])) > 0
+        is_cuda_available and config.trainer.get("profile_steps") is not None and len(config.trainer.get("profile_steps", [])) > 0
     ):
         from verl.utils.import_utils import is_nvtx_available
 
@@ -125,7 +125,7 @@ def run_ppo(config: DictConfig) -> None:
 
 
 @ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
-class TaskRunner:
+class TaskRunner(main_ppo.TaskRunner):
     """Ray remote class for executing distributed PPO training tasks.
 
     This class encapsulates the main training logic and runs as a Ray remote actor
@@ -146,7 +146,6 @@ class TaskRunner:
         from pprint import pprint
 
         from loguru import logger
-        from omegaconf import OmegaConf
         from verl.utils.fs import copy_to_local
         warm_up_process(config)
 
@@ -154,11 +153,25 @@ class TaskRunner:
         pprint(OmegaConf.to_container(config, resolve=True))
         OmegaConf.resolve(config)
 
+        actor_rollout_cls, ray_worker_group_cls = self.add_actor_rollout_worker(config)
+        self.add_critic_worker(config)
+
+        self.add_reward_model_resource_pool(config)
+
+        # Add a reference policy worker if KL loss or KL reward is used.
+        self.add_ref_policy_worker(config, actor_rollout_cls)
+
+        # validate config
+        validate_config(
+            config=config,
+            use_reference_policy=need_reference_policy(config),
+            use_critic=need_critic(config),
+        )
+
         # Download the checkpoint from HDFS to the local machine.
         # `use_shm` determines whether to use shared memory, which could lead to faster model loading if turned on
         local_path = copy_to_local(
-            config.ajet.model.path,
-            use_shm=config.actor_rollout_ref.model.get("use_shm", False),
+            config.ajet.model.path, use_shm=config.actor_rollout_ref.model.get("use_shm", False)
         )
 
         # Instantiate the tokenizer and processor.
@@ -169,61 +182,9 @@ class TaskRunner:
         # Used for multimodal LLM, could be None
         processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
 
-        # Define worker classes based on the actor strategy.
-        if config.actor_rollout_ref.actor.strategy in {"fsdp", "fsdp2"}:
-            assert config.critic.strategy in {"fsdp", "fsdp2"}
-            from verl.single_controller.ray import RayWorkerGroup
+        resource_pool_manager = self.init_resource_pool_mgr(config)
 
-            from ajet.backbone.verl import (AjetActorRolloutRefWorker,
-                                            AjetAsyncActorRolloutRefWorker)
-
-            ActorRolloutRefWorker = AjetActorRolloutRefWorker
-            actor_rollout_cls = AjetAsyncActorRolloutRefWorker
-            ray_worker_group_cls = RayWorkerGroup
-
-        elif config.actor_rollout_ref.actor.strategy == "megatron":
-            assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
-            from verl.single_controller.ray.megatron import \
-                NVMegatronRayWorkerGroup
-            from verl.workers.megatron_workers import (
-                ActorRolloutRefWorker, AjetAsyncActorRolloutRefWorker)
-
-            actor_rollout_cls = AjetAsyncActorRolloutRefWorker
-            ray_worker_group_cls = NVMegatronRayWorkerGroup
-
-        else:
-            raise NotImplementedError
-
-        from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
-
-        # Map roles to their corresponding remote worker classes.
-        role_worker_mapping = {
-            Role.ActorRollout: ray.remote(actor_rollout_cls),
-        }
-
-        # Define the resource pool specification.
-        # Map roles to the resource pool.
-        global_pool_id = "global_pool"
-        resource_pool_spec = {
-            global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
-        }
-        mapping = {
-            Role.ActorRollout: global_pool_id,
-        }
-
-        # Add a reference policy worker if KL loss or KL reward is used.
-        if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
-            role_worker_mapping[Role.RefPolicy] = ray.remote(ActorRolloutRefWorker)
-            mapping[Role.RefPolicy] = global_pool_id
-
-        resource_pool_manager = ResourcePoolManager(
-            resource_pool_spec=resource_pool_spec, mapping=mapping
-        )
-
-        task_reader = RouterTaskReader(
-            config.ajet.task_reader.type,
-            config.ajet.task_reader,
-        )
+        task_reader = RouterTaskReader(config.ajet.task_reader.type, config.ajet.task_reader,)
 
         train_dataset: TorchDataset = task_to_standard_dataset(task_reader.generate_training_tasks)  # type: ignore
         val_dataset: TorchDataset = task_to_standard_dataset(task_reader.generate_validation_tasks)  # type: ignore
@@ -241,7 +202,7 @@ class TaskRunner:
             config=config,
             tokenizer=tokenizer,
             processor=processor,
-            role_worker_mapping=role_worker_mapping,
+            role_worker_mapping=self.role_worker_mapping,
             resource_pool_manager=resource_pool_manager,
             ray_worker_group_cls=ray_worker_group_cls,
             train_dataset=train_dataset,
@@ -257,4 +218,4 @@ class TaskRunner:
 
 
 if __name__ == "__main__":
-    main()
+    main()  # pylint: disable=no-value-for-parameter

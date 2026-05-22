@@ -1,5 +1,4 @@
 import copy
-import json
 import os
 import time
 import uuid
@@ -79,11 +78,8 @@ class AsyncLlmBridge(object):
             if custom_sampling_params:
                 updated_sampling_params.update(custom_sampling_params)
 
-            updated_sampling_params["n"] = 1
-            updated_sampling_params["max_completion_tokens"] = self.config.ajet.rollout.max_response_length_in_one_turn
-            updated_sampling_params["temperature"] = self.config.ajet.rollout.val_kwargs.temperature
-            updated_sampling_params["top_k"] = self.config.ajet.rollout.val_kwargs.top_k
-            updated_sampling_params["top_p"] = self.config.ajet.rollout.val_kwargs.top_p
+            if "max_completion_tokens" not in updated_sampling_params:
+                updated_sampling_params["max_completion_tokens"] = self.config.ajet.rollout.max_response_length_in_one_turn
 
             updated_sampling_params.update({"logprobs": 1, "return_token_ids": True, "return_tokens_as_token_ids": True})
 
@@ -103,7 +99,6 @@ class AsyncLlmBridge(object):
                     messages=messages,
                     extra_body=updated_sampling_params,
                 )
-            print(completion)
 
             message = completion.choices[0].message.model_dump(exclude_unset=True, exclude_none=True)
 
@@ -138,7 +133,6 @@ class AsyncLlmBridge(object):
                 "tokens": token_logprobs,
             }
 
-
         async def llm_chat_remote(
             messages: List[Dict[str, str]],
             custom_sampling_params: dict = {},
@@ -166,7 +160,6 @@ class AsyncLlmBridge(object):
                     logger.bind(exception=True).exception(f"rollout_server.{i} error: {e.args}")
                     time.sleep(i + 1)
             return output_message[-1]  # type: ignore
-
 
         async def llm_chat_trinity(
             messages: List[Dict[str, str]],
@@ -226,8 +219,8 @@ class AsyncLlmBridge(object):
                 finish_reason = "tool_calls"
             usage = {
                 "prompt_tokens": len(prompt_token_ids),
-                "completion_tokens": len(response.choices[0].token_ids), # type: ignore
-                "total_tokens": len(prompt_token_ids) + len(response.choices[0].token_ids), # type: ignore
+                "completion_tokens": len(response.choices[0].token_ids),  # type: ignore
+                "total_tokens": len(prompt_token_ids) + len(response.choices[0].token_ids),  # type: ignore
             }
             return {
                 "role": "assistant",
@@ -241,7 +234,7 @@ class AsyncLlmBridge(object):
                 "tokens": [
                     TokenAndProb(
                         token_id=token,
-                        logprob=tokenlogprob.logprob, # Warning: vllm logprob does not participant training, for log only.
+                        logprob=tokenlogprob.logprob,  # Warning: vllm logprob does not participant training, for log only.
                         decoded_string=tokenlogprob.token,
                     )
                     for tokenlogprob, token in zip(
@@ -259,8 +252,6 @@ class AsyncLlmBridge(object):
             return llm_chat_verl
 
 
-
-
 # ----------------------------------------------------------------------------------------------
 # ------------------------ call async llm with context tracker (OpenAI) ------------------------
 # ----------------------------------------------------------------------------------------------
@@ -274,14 +265,13 @@ class OpenaiLlmProxyWithTracker(object):
 
     def __init__(
         self,
-        llm_inference_fn: Callable[..., Awaitable[Dict]], # Callable[AjetStandardLlmBridgeRequest, AjetStandardLlmBridgeResponse]
+        llm_inference_fn: Callable[..., Awaitable[Dict]],  # Callable[AjetStandardLlmBridgeRequest, AjetStandardLlmBridgeResponse]
         context_tracker: MultiAgentContextTracker,
         config,
     ) -> None:
         self.context_tracker = context_tracker
         self.llm_inference_fn = llm_inference_fn
         self.config = config
-
 
     async def chat_completion_request(
         self,
@@ -307,7 +297,6 @@ class OpenaiLlmProxyWithTracker(object):
         assert isinstance(response, ChatCompletion)
         return response
 
-
     async def __call__(
         self,
         messages: List[dict],
@@ -317,7 +306,6 @@ class OpenaiLlmProxyWithTracker(object):
     ) -> ChatResponse:
         llm_output = await self.run_infer(messages, tools, tool_choice, **kwargs)
         return convert_llm_proxy_response_to_oai_response(llm_output)
-
 
     async def run_infer(
         self,
@@ -357,7 +345,6 @@ class OpenaiLlmProxyWithTracker(object):
         self.context_tracker.step_track(llm_output, context_safe, converted_message, tools, timeline_uuid=timeline_uuid)
         return llm_output
 
-
     def construct_overflow_response(self, info):
         return {
             "role": "assistant",
@@ -367,9 +354,6 @@ class OpenaiLlmProxyWithTracker(object):
             "finish_reason": "length",
             "tokens": [],
         }
-
-
-
 
 
 # ----------------------------------------------------------------------------------------------

@@ -44,12 +44,10 @@ class SingleAgentContextTracker(BaseTracker):
 
         tokenizer_output = self.tokenizer(text_frag_to, return_tensors="pt", padding=False)
         input_ids = tokenizer_output["input_ids"][0].tolist()  # type: ignore
-        input_id_increment = input_ids[
-            len(token_ids_acc) :
-        ]  # get the new tokens added in this step
+        input_id_increment = input_ids[len(token_ids_acc):]  # get the new tokens added in this step
         overlap_length = 0
-        for i in range(len(token_ids_acc)):
-            if i < len(token_ids_acc) and input_ids[i] == token_ids_acc[i]:
+        for i, token_id_acc in enumerate(token_ids_acc):
+            if i < len(token_ids_acc) and input_ids[i] == token_id_acc:
                 overlap_length += 1
             else:
                 break
@@ -68,7 +66,7 @@ class SingleAgentContextTracker(BaseTracker):
             llm_output_role_content.update({"tool_calls": llm_output.get("tool_calls", [])})
 
         # completion_token_arr will contain generation_prompt header
-        completion_token_arr, _ = self.get_inc(
+        completion_token_arr, msg = self.get_inc(
             ajet_apply_chat_template(
                 tokenizer=self.tokenizer,
                 conversation=input_msg_ref,
@@ -84,15 +82,16 @@ class SingleAgentContextTracker(BaseTracker):
                 add_generation_prompt=False,
             ),
         )
-        vllm_output_raw_token = [t.token_id for t in llm_output["tokens"]]
-        vllm_output_raw_logprob = [t.logprob for t in llm_output["tokens"]]
-        self.generated_token_cnt += len(vllm_output_raw_token)
+        logger.info(msg)
+        output_raw_token = [t.token_id for t in llm_output["tokens"]]
+        output_raw_logprob = [t.logprob for t in llm_output["tokens"]]
+        self.generated_token_cnt += len(output_raw_token)
         if not self.generation_prompt_token:
             self.generation_prompt_token = self.get_generation_prompt_token()
         final_token_arr, token_logprob_arr, loss_mask, lack_normal_eos = replace_token_ids(
             token_container=completion_token_arr,
-            precise_token=vllm_output_raw_token,
-            precise_logprob=vllm_output_raw_logprob,
+            precise_token=output_raw_token,
+            precise_logprob=output_raw_logprob,
             begin_ids=self.generation_prompt_token,
             end_ids=[self.tokenizer.eos_token_id],
         )
@@ -293,7 +292,7 @@ class SingleAgentContextTracker(BaseTracker):
                 input_logprobs += ext_msg.token_logprob_arr
             input_ids_len += [len(input_ids)]
             attention_mask += [1] * len(ext_msg.token_arr)
-            loss_mask += ext_msg.get_loss_mask(blackout_token_combo=self.blackout_token_combo)
+            loss_mask += ext_msg.get_loss_mask(blackout_token_combo=self.generation_prompt_token)
 
         # if [prompt_token | response_token] is splited at a place where loss_mask == 0,
         # move the split index forward

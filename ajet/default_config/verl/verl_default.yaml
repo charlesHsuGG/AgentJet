@@ -61,12 +61,13 @@ actor_rollout_ref:
         - re:.*mlp.gate$
         activation_observer: static_minmax
         quantization_config_path: null
-    _target_: ajet.backbone.verl.actor_config.AgentJetFSDPActorConfig
+    # _target_: ajet.backbone.verl.actor_config.AgentJetFSDPActorConfig
+    _target_: verl.workers.config.FSDPActorConfig
     rollout_n: ${oc.select:actor_rollout_ref.rollout.n,1}
     strategy: fsdp
     ppo_mini_batch_size: 16
-    loss_extra_scale_ratio: 1.0
-    override_ppo_mini_batch_num: 1 # special in agentjet
+    # loss_extra_scale_ratio: 1.0
+    # override_ppo_mini_batch_num: 1 # special in agentjet
     ppo_micro_batch_size: null
     ppo_micro_batch_size_per_gpu: null
     use_dynamic_bsz: true
@@ -120,25 +121,57 @@ actor_rollout_ref:
         nsys:
           _target_: verl.utils.profiler.config.NsightToolConfig
           discrete: ${oc.select:global_profiler.global_tool_config.nsys.discrete}
-          name: nsight
         npu:
           _target_: verl.utils.profiler.config.NPUToolConfig
           contents: []
           level: level0
           analysis: true
           discrete: false
-          name: npu
         torch:
           _target_: verl.utils.profiler.config.TorchProfilerToolConfig
           contents: []
           discrete: false
-          name: torch
         torch_memory:
           _target_: verl.utils.profiler.config.TorchMemoryToolConfig
           trace_alloc_max_entries: ${oc.select:global_profiler.global_tool_config.torch_memory.trace_alloc_max_entries,100000}
           stack_depth: ${oc.select:global_profiler.global_tool_config.torch_memory.stack_depth,32}
-          name: torch_memory
-      global_tool_config: null
+    self_distillation:
+      _target_: verl.workers.config.SelfDistillationConfig
+      use_sdrlvr: false
+      full_logit_distillation: true
+      distillation_topk: 100
+      distillation_add_tail: true
+      alpha: 0.5
+      success_reward_threshold: 0.5
+      teacher_regularization: ema
+      teacher_update_rate: null
+      ema_update_rate: 0.05
+      max_reprompt_len: 10240
+      reprompt_truncation: right
+      dont_reprompt_on_self_success: true
+      remove_thinking_from_demonstration: true
+      include_environment_feedback: true
+      environment_feedback_only_without_solution: true
+      is_clip: 2
+      lmbda: 1.0
+      sdrlvr_clip_ratio_low: -20.0
+      sdrlvr_clip_ratio_high: 20.0
+      reprompt_template: '{prompt}{solution}{feedback}
+
+
+        Correctly solve the original question.'
+      solution_template: '
+
+        Correct solution:
+
+
+        {successful_previous_attempt}'
+      feedback_template: '
+
+        The following is feedback from your unsuccessful earlier attempt:
+
+
+        {feedback_raw}'
     router_replay:
       _target_: verl.workers.config.RouterReplayConfig
       mode: disabled
@@ -165,17 +198,10 @@ actor_rollout_ref:
     rollout_n: ${oc.select:actor_rollout_ref.rollout.n,1}
     strategy: ${actor_rollout_ref.actor.strategy}
     use_torch_compile: ${oc.select:actor_rollout_ref.actor.use_torch_compile,true}
-
-    ppo_micro_batch_size: null
-    ppo_micro_batch_size_per_gpu: null
-    use_dynamic_bsz: true
-
     log_prob_micro_batch_size: null
     log_prob_micro_batch_size_per_gpu: 1
     log_prob_use_dynamic_bsz: true
     log_prob_max_token_len_per_gpu: ${oc.select:actor_rollout_ref.actor.ppo_max_token_len_per_gpu,16384}
-
-    ppo_max_token_len_per_gpu: ${oc.select:actor_rollout_ref.actor.ppo_max_token_len_per_gpu,16384}
     profiler:
       _target_: verl.utils.profiler.ProfilerConfig
       tool: ${oc.select:global_profiler.tool,null}
@@ -187,25 +213,20 @@ actor_rollout_ref:
         nsys:
           _target_: verl.utils.profiler.config.NsightToolConfig
           discrete: ${oc.select:global_profiler.global_tool_config.nsys.discrete}
-          name: nsight
         npu:
           _target_: verl.utils.profiler.config.NPUToolConfig
           contents: []
           level: level0
           analysis: true
           discrete: false
-          name: npu
         torch:
           _target_: verl.utils.profiler.config.TorchProfilerToolConfig
           contents: []
           discrete: false
-          name: torch
         torch_memory:
           _target_: verl.utils.profiler.config.TorchMemoryToolConfig
           trace_alloc_max_entries: ${oc.select:global_profiler.global_tool_config.torch_memory.trace_alloc_max_entries,100000}
           stack_depth: ${oc.select:global_profiler.global_tool_config.torch_memory.stack_depth,32}
-          name: torch_memory
-      global_tool_config: null
     router_replay:
       _target_: verl.workers.config.RouterReplayConfig
       mode: disabled
@@ -253,7 +274,7 @@ actor_rollout_ref:
     mode: async
     nnodes: 0
     n_gpus_per_node: ${oc.select:trainer.n_gpus_per_node,8}
-    temperature: 0.9
+    temperature: 1.0
     top_k: -1
     top_p: 1
     prompt_length: ${oc.select:data.max_prompt_length,512}
@@ -293,7 +314,7 @@ actor_rollout_ref:
       _target_: verl.workers.config.SamplingConfig
       top_k: -1
       top_p: 1.0
-      temperature: 0
+      temperature: 1.0
       'n': 1
       do_sample: false
     multi_turn:
@@ -323,7 +344,6 @@ actor_rollout_ref:
         _target_: verl.workers.config.CustomAsyncServerConfig
         path: null
         name: null
-      agent_loop_manager_class: null
     checkpoint_engine:
       _target_: verl.workers.config.CheckpointEngineConfig
       backend: naive
@@ -354,13 +374,10 @@ actor_rollout_ref:
           level: ${oc.select:actor_rollout_ref.actor.profiler.tool_config.npu.level,level0}
           analysis: ${oc.select:actor_rollout_ref.actor.profiler.tool_config.npu.analysis,false}
           discrete: ${oc.select:actor_rollout_ref.actor.profiler.tool_config.npu.discrete,false}
-          name: npu
         torch:
           _target_: verl.utils.profiler.config.TorchProfilerToolConfig
           contents: ${oc.select:actor_rollout_ref.actor.profiler.tool_config.torch.contents,[]}
           discrete: ${oc.select:actor_rollout_ref.actor.profiler.tool_config.torch.discrete,false}
-          name: torch
-      global_tool_config: null
     prometheus:
       _target_: verl.workers.config.PrometheusConfig
       enable: false
@@ -372,20 +389,6 @@ actor_rollout_ref:
     mtp: ${oc.select:actor_rollout_ref.model.mtp, null}
     qat: ${oc.select:actor_rollout_ref.actor.fsdp_config.qat,null}
     layered_summon: false
-    enable_sleep_mode: true
-    custom: null
-    sglang_engine_mode: local
-    moe_tensor_parallel_size: 1
-    limit_images: null
-    repetition_penalty: 1.0
-    layer_name_map: {}
-    server:
-      _target_: verl.workers.config.rollout.ServerConfig
-      timeout: 60.0
-      max_attempts: 3
-      retry_delay: 2.0
-      max_start_wait_time: 300.0
-      max_connections: 1000
   model:
     _target_: verl.workers.config.HFModelConfig
     path: ~/models/deepseek-llm-7b-chat
@@ -424,16 +427,6 @@ actor_rollout_ref:
       speculative_num_draft_tokens: 4
       method: mtp
       num_speculative_tokens: 1
-    tokenizer: null
-    load_tokenizer: true
-    hf_config: null
-    local_tokenizer_path: null
-    processor: null
-    architectures: null
-    local_path: null
-    generation_config: null
-    local_hf_config_path: null
-    target_parameters: null
   hybrid_engine: true
   nccl_timeout: 600
 data:
@@ -579,34 +572,24 @@ critic:
       nsys:
         _target_: verl.utils.profiler.config.NsightToolConfig
         discrete: ${oc.select:global_profiler.global_tool_config.nsys.discrete}
-        name: nsight
       npu:
         _target_: verl.utils.profiler.config.NPUToolConfig
         contents: []
         level: level0
         analysis: true
         discrete: false
-        name: npu
       torch:
         _target_: verl.utils.profiler.config.TorchProfilerToolConfig
         contents: []
         discrete: false
-        name: torch
       torch_memory:
         _target_: verl.utils.profiler.config.TorchMemoryToolConfig
         trace_alloc_max_entries: ${oc.select:global_profiler.global_tool_config.torch_memory.trace_alloc_max_entries,100000}
         stack_depth: ${oc.select:global_profiler.global_tool_config.torch_memory.stack_depth,32}
-        name: torch_memory
-    global_tool_config: null
   forward_micro_batch_size: ${oc.select:.ppo_micro_batch_size,null}
   forward_micro_batch_size_per_gpu: ${oc.select:.ppo_micro_batch_size_per_gpu,null}
   ulysses_sequence_parallel_size: 1
   grad_clip: 1.0
-  ppo_infer_max_token_len_per_gpu: 32768
-  engine:
-    _target_: verl.base_config.BaseConfig
-  model_config: null
-  ppo_infer_micro_batch_size_per_gpu: null
 custom_reward_function:
   path: null
   name: null
@@ -656,7 +639,7 @@ reward:
     path: null
     name: compute_score
   reward_manager:
-    _target_: verl.workers.config.reward.RewardManagerConfig
+    _target_: verl.workers.config.reward_model.RewardManagerConfig
     source: register
     name: naive
     module:
@@ -671,10 +654,10 @@ reward:
     model_path: null
     rollout:
       _target_: verl.workers.config.RolloutConfig
-      name: vllm
+      name: sglang
       dtype: bfloat16
       gpu_memory_utilization: 0.85
-      enforce_eager: true
+      enforce_eager: false
       cudagraph_capture_sizes: null
       free_cache_engine: true
       data_parallel_size: 1
@@ -722,9 +705,6 @@ algorithm:
   pf_ppo:
     reweight_method: pow
     weight_pow: 2.0
-  filter_groups: null
-  gdpo_reward_keys: null
-  gdpo_reward_weights: null
 trainer:
   balance_batch: true
   total_epochs: 30
@@ -758,6 +738,31 @@ trainer:
   use_legacy_worker_impl: auto
 global_profiler:
   _target_: verl.utils.profiler.ProfilerConfig
+  tool: null
+  steps: null
+  profile_continuous_steps: false
+  save_path: outputs/profile
+  global_tool_config:
+    nsys:
+      _target_: verl.utils.profiler.config.NsightToolConfig
+      discrete: false
+      controller_nsight_options:
+        trace: cuda,nvtx,cublas,ucx
+        cuda-memory-usage: 'true'
+        cuda-graph-trace: graph
+      worker_nsight_options:
+        trace: cuda,nvtx,cublas,ucx
+        cuda-memory-usage: 'true'
+        cuda-graph-trace: graph
+        capture-range: cudaProfilerApi
+        capture-range-end: null
+        kill: none
+    torch_memory:
+      trace_alloc_max_entries: 100000
+      stack_depth: 32
+      context: all
+      stacks: all
+      kw_args: {}
 transfer_queue:
   enable: false
 ray_kwargs:

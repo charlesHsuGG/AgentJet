@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import List
 
 from loguru import logger
-from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer
 
 from ajet.utils.tokenizer import ajet_apply_chat_template
 
@@ -27,10 +27,10 @@ def find_sublist_indices(large_list, small_list, reverse=False):
     small_len = len(small_list)
     if reverse:
         for i in reversed(range(len(large_list) - small_len + 1)):
-            if large_list[i : i + small_len] == small_list:
+            if large_list[i: i + small_len] == small_list:
                 return i
     for i in range(len(large_list) - small_len + 1):
-        if large_list[i : i + small_len] == small_list:
+        if large_list[i: i + small_len] == small_list:
             return i
     return -1
 
@@ -88,7 +88,7 @@ class ExtendedMessage:
         self.invalid_log_prob_value = INVALID_LOG_PROB_VALUE
         self._content_for_compare = ""
         self._info = ""
-        self.tools = tools
+        self.tools = tools or []
         self.tool_calls = tool_calls
         self.tool_call_id = tool_call_id
         self.name = name    # preserved field, not used currently
@@ -101,7 +101,7 @@ class ExtendedMessage:
         self.manual_loss_mask_override = []
         self.lack_normal_eos = False
 
-        self.generate_content_for_compare(content = self.content)
+        self.generate_content_for_compare(content=self.content)
 
         self.eos_token_id = tokenizer.eos_token_id
 
@@ -121,7 +121,7 @@ class ExtendedMessage:
         if not self.first_message:
             self.token_arr = self.auto_tokenize_non_first_message(tokenizer=tokenizer, tools=tools)
         else:
-            auto_tokenize_target:dict = {
+            auto_tokenize_target: dict = {
                 "role": self.role,
                 "content": self.content_for_compare,
             }
@@ -138,7 +138,7 @@ class ExtendedMessage:
     def auto_tokenize_non_first_message(self, tokenizer, tools):
         try:
             # completion_token_arr will contain generation_prompt header
-            auto_tokenize_target:dict = {
+            auto_tokenize_target: dict = {
                 "role": self.role,
                 "content": self.content_for_compare,
             }
@@ -153,9 +153,8 @@ class ExtendedMessage:
                 tools=tools,
             )
         except Exception as e:
-            raise ValueError(
-                f"Cannot tokenize {self.role} --- {self.content_for_compare}, \n\n Error: {e}"
-            )
+            raise ValueError(f"Cannot tokenize {self.role} --- {self.content_for_compare}, \n\n Error: {e}") from e
+
         self.token_arr, _ = self.get_inc_simple(
             text_frag_from=ajet_apply_chat_template(
                 tokenizer=tokenizer,
@@ -228,7 +227,7 @@ class ExtendedMessage:
                     log_dir = "./loss_mask_exception"
                     os.makedirs(log_dir, exist_ok=True)
                     with open(os.path.join(log_dir, "exception.log"), "a") as f:
-                        f.write(f"\n{'='*80}\n")
+                        f.write(f"\n{'=' * 80}\n")
                         f.write(f"[{datetime.now().isoformat()}]\n")
                         f.write(f"{error_msg}\n")
                         f.write(f"Traceback:\n{traceback.format_exc()}\n")
@@ -250,7 +249,7 @@ class ExtendedMessage:
         input_ids = tokenizer_output["input_ids"][0].tolist()
         del tokenizer_output  # Free memory immediately
         # get the new tokens added in this step
-        input_id_increment = input_ids[len(token_ids_acc) :]
+        input_id_increment = input_ids[len(token_ids_acc):]
         FN_DEBUG = False
         if FN_DEBUG:
             overlap_length = 0
@@ -299,7 +298,7 @@ class ExtendedMessage:
             merged_content = "".join(
                 f"<tool_response>\n{msg.content}\n</tool_response>\n" for msg in group
             )
-            merged_content = merged_content[len("<tool_response>\n") :]
+            merged_content = merged_content[len("<tool_response>\n"):]
             merged_content = merged_content[: -len("</tool_response>\n")]
             # create merged tool response block
             merged = ExtendedMessage(

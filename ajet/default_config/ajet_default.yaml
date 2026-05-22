@@ -75,14 +75,14 @@ ajet:
     num_repeat: 4
 
     # rollout kwargs
-    temperature: 0.9
+    temperature: 1.0
     top_p: 1.0
     top_k: -1
 
     # validation kwargs
     val_kwargs:
       # when doing validation, the sample setting when generating response
-      temperature: 0.0
+      temperature: 1.0
       top_k: -1
       top_p: 1.0
       do_sample: False
@@ -135,7 +135,7 @@ ajet:
       llm_response_length: 8192
       num_workers: 32
       sampling_params:
-        temperature: 0
+        temperature: 1.0
       deduplication_filter:
         enabled: true
         params:
@@ -308,7 +308,7 @@ ajet:
     ppo_epochs: 1
 
     # loss = loss * loss_extra_scale_ratio
-    loss_extra_scale_ratio: 1.0
+    # loss_extra_scale_ratio: 1.0
 
     # Ulysses specific configs
     ulysses_sequence_parallel_size: 1

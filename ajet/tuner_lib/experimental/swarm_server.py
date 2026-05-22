@@ -34,12 +34,15 @@ RCVTIMEO_WAIT_N = RCVTIMEO_OUT // RCVTIMEO
 def is_key_episode_status(key: str) -> bool:
     return key.startswith("episodes-")
 
+
 def is_key_finished_episode_status(key: str) -> bool:
     return key.startswith("finished-episodes-")
+
 
 @lru_cache(maxsize=128)
 def ep_key(episode_uuid: str) -> str:
     return f"episodes-{episode_uuid}"
+
 
 @lru_cache(maxsize=128)
 def finished_ep_key(episode_uuid: str) -> str:
@@ -78,8 +81,8 @@ def register_enable_swarm_mode_routes(
         for episode_uuid in to_unclaim_episodes:
             try:
                 await _revert_episode_to_unclaimed(episode_uuid, shared_mem_dict, shared_mem_dict_lock)
-            except:
-                logger.error(f"Error while reverting episode {episode_uuid} to unclaimed.")
+            except Exception as e:
+                logger.error(f"Error while reverting episode {episode_uuid} to unclaimed: {e}")
 
         return to_unclaim_episodes
 
@@ -115,7 +118,7 @@ def register_enable_swarm_mode_routes(
                     return
                 if shared_mem_dict["engine_status"] not in ["ENGINE.ROLLING", "ENGINE.ROLLING_POST"]:
                     logger.info(f"[server] episode_uuid: {episode_uuid} | Engine is no longer rolling, aborting wait for ack.")
-                    raise RuntimeError("Engine is no longer rolling, aborting wait for ack.")
+                    raise RuntimeError("Engine is no longer rolling, aborting wait for ack.") from e
                 continue
 
     async def _revert_episode_to_unclaimed(episode_uuid: str, shared_mem_dict, shared_mem_dict_lock, revert_reason="timeout"):
@@ -191,7 +194,7 @@ def register_enable_swarm_mode_routes(
                 #   <expect>: "ack"
                 socket.recv_string()
                 break
-            except zmq.Again as e:
+            except zmq.Again:
                 if DEBUG:
                     logger.info(f"[server] episode_uuid: {episode_uuid} | recv_string timeout, retrying.")
                 if shared_mem_dict["engine_status"] not in ["ENGINE.ROLLING", "ENGINE.ROLLING_POST"]:
@@ -255,6 +258,7 @@ def register_enable_swarm_mode_routes(
     # -------------------------- engine status op ------------------------------------------
     # --------------------------------------------------------------------------------------
     shared_mem_dict["engine_status"] = "ENGINE.OFFLINE"  # initial status
+
     def _clean_up_engine_status(shared_mem_dict_lock, shared_mem_dict):
         with shared_mem_dict_lock:
             episode_keys = [k for k in shared_mem_dict.keys() if is_key_episode_status(k) or is_key_finished_episode_status(k)]
@@ -281,7 +285,7 @@ def register_enable_swarm_mode_routes(
         Store it in shared memory for later use by start_engine.
         """
         if VERBOSE:
-            logger.info(f"Running: /sync_train_config")
+            logger.info("Running: /sync_train_config")
 
         if shared_mem_dict["engine_status"] != "ENGINE.OFFLINE":
             raise HTTPException(
@@ -321,11 +325,10 @@ def register_enable_swarm_mode_routes(
         This creates a temporary YAML file and spawns a training process.
         """
         if VERBOSE:
-            logger.info(f"Running: /start_engine")
+            logger.info("Running: /start_engine")
         try:
             import tempfile
 
-            import ray
             import yaml as yaml_module
 
             from ajet.launcher import (get_backbone_target,
@@ -447,7 +450,7 @@ def register_enable_swarm_mode_routes(
     async def update_engine_status(req: UpdateEngineStatusRequest):
         """Update the current engine status."""
         if VERBOSE:
-            logger.info(f"Running /update_engine_status")
+            logger.info("Running /update_engine_status")
         if req.engine_status not in VALID_STATUSES:
             return BoolResponse(success=False, failure_reason="Invalid engine status")
         previous_status = shared_mem_dict["engine_status"]
@@ -498,11 +501,12 @@ def register_enable_swarm_mode_routes(
         if engine_status not in ["ENGINE.ROLLING"]:
             return BoolResponse(
                 success=False,
-                failure_reason=f"Engine is not in rolling state. Cannot register episode.",
+                failure_reason="Engine is not in rolling state. Cannot register episode.",
             )
 
         episode_uuid = req.episode_uuid
-        if VERBOSE: logger.info(f"Running [{episode_uuid}]: /register_episode")
+        if VERBOSE:
+            logger.info(f"Running [{episode_uuid}]: /register_episode")
 
         es = EpisodeStatus(
             episode_uuid=req.episode_uuid,
@@ -628,7 +632,6 @@ def register_enable_swarm_mode_routes(
         assert "task_id" in workflow_output.metadata, "workflow_output.metadata must contain task_id"
         assert workflow_output.metadata["task_id"] == task_id, "workflow_output.metadata.task_id must match req.task_id"
 
-
         if (ep_key(episode_uuid)) not in shared_mem_dict:
             logger.error(f"[server] Episode {episode_uuid} not found.")
             raise HTTPException(status_code=400, detail=f"Episode {episode_uuid} not found.")
@@ -682,8 +685,8 @@ def register_enable_swarm_mode_routes(
 
         # receive workflow output data
         episode_uuid = req.episode_uuid
-        workflow_output = req.workflow_output
-        task_id = req.task_id
+        # workflow_output = req.workflow_output
+        # task_id = req.task_id
 
         if VERBOSE:
             logger.info(f"Running [{episode_uuid}]: /abort_episode")
@@ -739,7 +742,7 @@ def register_enable_swarm_mode_routes(
     async def update_current_batch_rollout_pool_information(req: CurrentBatchRolloutPoolInformation):
         """Update the current batch rollout pool information."""
         if DEBUG:
-            logger.info(f"Running /update_current_batch_rollout_pool_information")
+            logger.info("Running /update_current_batch_rollout_pool_information")
         try:
             with shared_mem_dict_lock:
                 # Ignore fields that are only maintained in shared_mem_dict

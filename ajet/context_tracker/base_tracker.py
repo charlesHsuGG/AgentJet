@@ -1,11 +1,8 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
-from ajet.schema.task import WorkflowTask
 
-from ajet.schema.extended_msg import (
-    INVALID_LOG_PROB_VALUE,
-    ExtendedMessage,
-    find_sublist_indices,
-)
+from ajet.schema.extended_msg import (INVALID_LOG_PROB_VALUE, ExtendedMessage,
+                                      find_sublist_indices)
+from ajet.schema.task import WorkflowTask
 from ajet.schema.trajectory import Reward
 
 
@@ -74,11 +71,11 @@ def replace_token_ids(
     _begin_index = find_sublist_indices(token_container, begin_ids) + len(begin_ids)
     _end_index = find_sublist_indices(token_container, end_ids, reverse=True)
 
-    if precise_token[-len(end_ids) :] == end_ids:  # remove end_ids token
+    if precise_token[-len(end_ids):] == end_ids:  # remove end_ids token
         lack_normal_eos = False
         precise_token_center = precise_token[: -len(end_ids)]
         precise_logprob_center = precise_logprob[: -len(end_ids)]
-        logprob_eos_tail = precise_logprob[-len(end_ids) :]
+        logprob_eos_tail = precise_logprob[-len(end_ids):]
     else:
         lack_normal_eos = True
         precise_token_center = precise_token
@@ -126,8 +123,8 @@ class BaseTracker(object):
 
         # tokenizer
         self.tokenizer = tokenizer
-        self.blackout_token_combo = tokenizer.encode("<|im_start|>assistant\n")
-        self._im_start_token_id = tokenizer.encode("<|im_start|>")[0]
+        # self.blackout_token_combo = tokenizer.encode("<|im_start|>assistant\n")
+        # self._im_start_token_id = tokenizer.encode("<|im_start|>")[0]
 
         # config
         self.config = config

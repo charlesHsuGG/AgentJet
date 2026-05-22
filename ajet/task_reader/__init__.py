@@ -1,8 +1,8 @@
-import datasets
-import numpy as np
+from typing import Generator, List
 
-from typing import List, List, Union
+import numpy as np
 from datasets import Dataset
+
 from ajet.schema.task import Task
 from ajet.task_reader.data_generator_reader import DataGeneratorTaskReader
 from ajet.task_reader.env_service_reader import EnvServiceTaskReader
@@ -10,7 +10,6 @@ from ajet.task_reader.hf_dataset_reader import HuggingFaceTaskReader
 from ajet.task_reader.jsonl_reader import JsonlTaskReader
 from ajet.task_reader.task_reader_base import BaseTaskReader
 from ajet.task_reader.tracing_reader import TracingReader
-from typing import Generator
 
 
 class RandomDummyTaskReader(BaseTaskReader):
@@ -49,6 +48,7 @@ def list_to_generator(tasks: List[Task]) -> Generator:
     for task in tasks:
         yield task
 
+
 class RouterTaskReader(BaseTaskReader):
     def __init__(self, reader_type, reader_config):
         super().__init__(None)
@@ -68,7 +68,8 @@ class RouterTaskReader(BaseTaskReader):
             self.task_reader = RandomDummyTaskReader(reader_config)
         elif task_reader_type == "deep_finance":
             # deep_finance: load message from JSON file and assemble init_messages, tool calls go through env_service
-            from tutorial.example_deep_finance.deep_finance_reader import DeepFinanceReader
+            from tutorial.example_deep_finance.deep_finance_reader import \
+                DeepFinanceReader
             self.task_reader = DeepFinanceReader(reader_config)
         else:
             raise ValueError(f"Unsupported task reader type: {task_reader_type}")
@@ -98,7 +99,6 @@ class RouterTaskReader(BaseTaskReader):
         return result
 
 
-
 def task_to_standard_dataset(gen_tasks) -> Dataset:
     """
     Convert a potentially large/infinite generator of Task objects
@@ -114,8 +114,7 @@ def task_to_standard_dataset(gen_tasks) -> Dataset:
         for task in gen_tasks():
             yield task.model_dump()
 
-    return Dataset.from_generator(gen) # type: ignore
-
+    return Dataset.from_generator(gen)  # type: ignore
 
 
 def dict_to_ajet_task(task_dict: dict) -> Task:

@@ -680,7 +680,7 @@ class SwarmClient(SwarmClientBase):
             time.sleep(8)
 
         logger.success("--------------------------------------------------------------------------------------------------")
-        logger.success("Run `python -m ajet.launcher --swarm-overwatch={self.server_url}` to monitor the training process.")
+        logger.success(f"Run `python -m ajet.launcher --swarm-overwatch={self.server_url}` to monitor the training process.")
         logger.success("--------------------------------------------------------------------------------------------------")
 
         current_status, _ = self.get_engine_status()
