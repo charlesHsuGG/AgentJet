@@ -147,14 +147,18 @@ class AIMEAutoResearchTrainer:
             model=model_path,
             batch_size=batch_size,
             swarm_mode=True,
-            swarm_mode_sample_collection_method="rollout_until_finish_enough_non_dummy_tasks",
+            # With the default `task_reader.type: random_dummy`, counting only non-dummy tasks
+            # can stall sample collection indefinitely.
+            swarm_mode_sample_collection_method="rollout_until_finish_enough_tasks",
             num_repeat=grpo_repeat,
             ppo_epochs=ppo_epochs,
             mini_batch_num=mini_batch_num,
             use_kl_loss=use_kl_loss,
             use_kl_in_reward=use_kl_in_reward,
             kl_penalty_type=kl_penalty_type,
-            logging="swanlab",
+            # Avoid external auth/env requirements (e.g. SWANLAB_API_KEY) by default.
+            # Can be overridden via AJET_LOGGER if needed.
+            logging=os.getenv("AJET_LOGGER", "tensorboard"),
             max_prompt_length=max_prompt_length,
             max_response_length=max_response_length,
             max_response_length_in_one_turn=max_response_length_in_one_turn,
@@ -229,7 +233,7 @@ class AIMEAutoResearchTrainer:
         episode_uuid, api_baseurl_key = self.swarm_worker.begin_episode(discard_episode_timeout=120)
         workflow_output = execute_agent(task, api_baseurl_key, self.ajet_job)
         self.swarm_worker.end_episode(task, episode_uuid, workflow_output)
-        return workflow_output.reward
+        return self._normalize_reward(workflow_output.reward)
 
     def eval_rollout(self, task: Task) -> float:
         assert self.swarm_worker is not None, "setup() must be called before eval_rollout()"
@@ -238,9 +242,22 @@ class AIMEAutoResearchTrainer:
         )
         try:
             workflow_output = execute_agent(task, api_baseurl_key, self.ajet_job)
-            return workflow_output.reward
+            return self._normalize_reward(workflow_output.reward)
         finally:
             self.swarm_worker.abort_episode(episode_uuid)
+
+    @staticmethod
+    def _normalize_reward(reward) -> float:
+        """Coerce reward to a scalar float.
+
+        Some workflows may return per-step rewards (list) or None.
+        """
+        if reward is None:
+            return 0.0
+        if isinstance(reward, (list, tuple)):
+            # Preserve sign and scale in a simple way; reward is expected to be scalar.
+            return float(sum((r or 0.0) for r in reward))
+        return float(reward)
 
     def run_eval(self, n_global_step: int):
         if not self.eval_tasks_by_set:
@@ -310,6 +327,7 @@ class AIMEAutoResearchTrainer:
 
     def train(self):
         assert self.swarm_worker is not None and self.dataset is not None, "setup() must be called before train()"
+        # Step-0 eval: swarm mode cannot enable val_before_train.
         self.run_eval(0)
 
         max_parallel = 64
@@ -322,12 +340,27 @@ class AIMEAutoResearchTrainer:
 
         num_epochs = 10000
         last_eval_step = 0
+        last_observed_global_step = None
+        n_global_step = 0
         for epoch in range(num_epochs):
             for _, task in enumerate(self.dataset.generate_training_tasks()):
                 args_list = [{"task": task} for _ in range(self.grpo_n)]
                 executor.submit_group(task_id=task.task_id, fn=self.rollout, args_list=args_list)
 
                 n_global_step = self.swarm_worker.get_global_step()
+
+                # If the engine restarts, global_step may jump backwards. In that case,
+                # reset eval scheduling so we don't "wait forever" to resume eval logs.
+                if (
+                    last_observed_global_step is not None
+                    and n_global_step < last_observed_global_step
+                ):
+                    print(
+                        f"[WARN] Detected global_step reset: {last_observed_global_step} -> {n_global_step}. "
+                        "Resetting eval scheduling."
+                    )
+                    last_eval_step = max(0, n_global_step - self.eval_interval)
+                last_observed_global_step = n_global_step
 
                 time_to_eval = n_global_step >= last_eval_step + self.eval_interval
                 if time_to_eval:
@@ -339,6 +372,14 @@ class AIMEAutoResearchTrainer:
 
             if n_global_step >= self.total_training_steps:
                 break
+
+        # Ensure the final step is evaluated even if the loop exits early.
+        try:
+            final_step = self.swarm_worker.get_global_step()
+        except Exception:
+            final_step = None
+        if final_step is not None and final_step >= self.total_training_steps and last_eval_step < self.total_training_steps:
+            self.run_eval(self.total_training_steps)
 
         finish_flag = os.path.join(self.result_dir, "finish.flag")
         with open(finish_flag, "w") as f:

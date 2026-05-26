@@ -339,17 +339,46 @@ def execute_training_process(
         env: Environment variables dictionary
     """
 
-    # Fixed config asset locations
-    TRINITY_BOOT_YAML = "ajet/default_config/trinity/trinity_launch.yaml"  # THIS FILE IS READ ONLY, and ALWAYS FIXED
-    TRINITY_CONFIG_AUTO_CONVERSION = (
-        "ajet/default_config/trinity/config_auto_convertion_trinity.jsonc"
+    # Fixed config asset locations.
+    # Use absolute paths so the engine works regardless of current working directory.
+    agentjet_base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    TRINITY_BOOT_YAML = os.path.join(
+        agentjet_base_dir,
+        "ajet",
+        "default_config",
+        "trinity",
+        "trinity_launch.yaml",
+    )  # THIS FILE IS READ ONLY, and ALWAYS FIXED
+    TRINITY_CONFIG_AUTO_CONVERSION = os.path.join(
+        agentjet_base_dir,
+        "ajet",
+        "default_config",
+        "trinity",
+        "config_auto_convertion_trinity.jsonc",
     )
-    VERL_CONFIG_AUTO_CONVERSION = (
-        "ajet/default_config/verl/config_auto_convertion_verl.jsonc"
+    VERL_CONFIG_AUTO_CONVERSION = os.path.join(
+        agentjet_base_dir,
+        "ajet",
+        "default_config",
+        "verl",
+        "config_auto_convertion_verl.jsonc",
     )
 
-    os.makedirs('/tmp/ajet', exist_ok=True)
-    assert os.path.exists('/tmp/ajet'), "Temporary directory /tmp/ajet cannot be create."
+    for required_fp in [TRINITY_BOOT_YAML, TRINITY_CONFIG_AUTO_CONVERSION, VERL_CONFIG_AUTO_CONVERSION]:
+        if not os.path.exists(required_fp):
+            raise FileNotFoundError(
+                f"Required AgentJet config asset not found: {required_fp}. "
+                "Please check your installation and repository layout."
+            )
+
+    # Avoid creating `/tmp/ajet` because Ray workers may run with cwd=`/tmp`,
+    # and then Python can accidentally import a namespace package from `/tmp/ajet`
+    # instead of the real `agentjet_codebase/ajet` package.
+    runtime_tmp_dir = "/tmp/agentjet"
+    os.makedirs(runtime_tmp_dir, exist_ok=True)
+    assert os.path.exists(runtime_tmp_dir), (
+        f"Temporary directory {runtime_tmp_dir} cannot be created."
+    )
 
     # let's begin the training process
     if args.backbone == "trinity":
