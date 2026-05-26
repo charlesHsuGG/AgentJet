@@ -6,12 +6,12 @@ from loguru import logger
 
 from ajet.utils.cleaner import fast_kill_by_keyword_bash
 from ajet.utils.config_utils import prepare_experiment_config
-from ajet.utils.launch_utils import (check_avail_gpu,  # start_ray_service,
-                                     check_debugpy_version, dict_to_namespace,
+from ajet.utils.launch_utils import (check_avail_gpu, check_debugpy_version,
+                                     dict_to_namespace,
                                      execute_training_process,
                                      get_backbone_target, launch_logview,
                                      set_loguru_default_color,
-                                     setup_environment_vars)
+                                     setup_environment_vars, start_ray_service)
 from ajet.utils.pty import pty_launch
 
 set_loguru_default_color()

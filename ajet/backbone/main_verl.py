@@ -22,6 +22,7 @@ import socket
 import hydra
 import ray
 from omegaconf import DictConfig, OmegaConf
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 from torch.utils.data import Dataset as TorchDataset
 from verl.trainer import main_ppo
 from verl.trainer.ppo.utils import need_critic, need_reference_policy
@@ -50,7 +51,7 @@ def main(config: DictConfig) -> None:
 
 
 # Define a function to run the PPO-like training process
-def run_ppo(config: DictConfig) -> None:
+def run_ppo(config: DictConfig, task_runner_class=None) -> None:
     """Initialize Ray cluster and run distributed PPO training process.
 
     Args:
@@ -107,24 +108,43 @@ def run_ppo(config: DictConfig) -> None:
 
     atexit.register(on_shutdown)  # ray shutdown on exit
 
+    if task_runner_class is None:
+        nodes = ray.nodes()
+        ray_head_node_name = os.environ.get("RAY_HEAD_NODE_NAME", None)
+        try:
+            target_node_id = next(node["NodeID"] for node in nodes if ray_head_node_name is not None and ray_head_node_name in node["NodeManagerHostname"])
+            print(f"Scheduling main_task on node_id: {target_node_id}")
+            task_runner_class = ray.remote(
+                num_cpus=1, scheduling_strategy=NodeAffinitySchedulingStrategy(target_node_id, soft=False)
+            )(TaskRunner)  # please make sure main_task is not scheduled on head
+        except StopIteration:
+            print(f"No node with {ray_head_node_name} in NodeManagerHostname found. The main task will be scheduled without node affinity.")
+            task_runner_class = ray.remote(num_cpus=1)(TaskRunner)
+
     # Create a remote instance of the TaskRunner class, and
     # Execute the `run` method of the TaskRunner instance remotely and wait for it to complete
     if (
-        is_cuda_available and config.trainer.get("profile_steps") is not None and len(config.trainer.get("profile_steps", [])) > 0
+        is_cuda_available and config.global_profiler.tool == "nsys" and config.global_profiler.get("steps") is not None and len(config.global_profiler.get("steps", [])) > 0
     ):
         from verl.utils.import_utils import is_nvtx_available
 
-        assert (
-            is_nvtx_available()
-        ), "nvtx is not available in CUDA platform. Please 'pip3 install nvtx'"
-        nsight_options = OmegaConf.to_container(config.trainer.controller_nsight_options)
-        runner = TaskRunner.options(runtime_env={"nsight": nsight_options}).remote()  # pylint: disable=no-member
+        assert is_nvtx_available(), "nvtx is not available in CUDA platform. Please 'pip3 install nvtx'"
+        nsight_options = OmegaConf.to_container(
+            config.global_profiler.global_tool_config.nsys.controller_nsight_options
+        )
+        runner = task_runner_class.options(runtime_env={"nsight": nsight_options}).remote()
     else:
-        runner = TaskRunner.remote()  # pylint: disable=no-member
+        runner = task_runner_class.remote()
+
     ray.get(runner.run.remote(config))
 
+    # [Optional] get the path of the timeline trace file from the configuration, default to None
+    # This file is used for performance analysis
+    timeline_json_file = config.ray_kwargs.get("timeline_json_file", None)
+    if timeline_json_file:
+        ray.timeline(filename=timeline_json_file)
 
-@ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
+
 class TaskRunner(main_ppo.TaskRunner):
     """Ray remote class for executing distributed PPO training tasks.
 

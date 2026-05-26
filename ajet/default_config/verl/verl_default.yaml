@@ -153,7 +153,6 @@ actor_rollout_ref:
       include_environment_feedback: true
       environment_feedback_only_without_solution: true
       is_clip: 2
-      lmbda: 1.0
       sdrlvr_clip_ratio_low: -20.0
       sdrlvr_clip_ratio_high: 20.0
       reprompt_template: '{prompt}{solution}{feedback}

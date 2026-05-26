@@ -329,6 +329,7 @@ def register_enable_swarm_mode_routes(
         try:
             import tempfile
 
+            import ray
             import yaml as yaml_module
 
             from ajet.launcher import (get_backbone_target,
@@ -390,9 +391,9 @@ def register_enable_swarm_mode_routes(
             # Setup environment variables
             env, exp_config = setup_environment_vars(args, exp_config, main_yaml_fp)
 
-            # # Start ray if not already started
+            # Start ray if not already started
             # if not ray.is_initialized():
-            #     # from ajet.utils.launch_utils import start_ray_service
+            #     from ajet.utils.launch_utils import start_ray_service
 
             #     logger.info("[start_engine] Starting Ray service...")
             #     # start_ray_service(args, env)

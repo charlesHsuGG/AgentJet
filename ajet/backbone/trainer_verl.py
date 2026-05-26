@@ -359,7 +359,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
         # load checkpoint and update weights before doing anything
         self._load_checkpoint()
         self.checkpoint_manager.update_weights(self.global_steps)
-        self.checkpoint_manager.sleep_replicas()
 
         # [oc] swarm_mode is not compatible with `val_before_train` and `val_only`
         assert not (self.config.ajet.enable_swarm_mode and (self.config.ajet.trainer_common.val_before_train or self.config.ajet.trainer_common.val_only)), \
@@ -451,10 +450,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     logger.info("rollout step begin")
                     with marked_timer("gen", timing_raw, color="red"):
                         # assert self.async_rollout_mode
-                        logger.info("wake up begin")
-                        self.checkpoint_manager.update_weights(self.global_steps)
                         self._update_interchange_server_status_flag("ENGINE.ROLLING")
-                        logger.info("wake up end")
                         if curr_step_profile:
                             self.async_rollout_manager.start_profile()
                         tasks: List[Task] = [
