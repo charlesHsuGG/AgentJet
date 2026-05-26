@@ -361,8 +361,9 @@ def execute_training_process(
         resolve_ajet_asset("ajet/default_config/verl/config_auto_convertion_verl.jsonc")
     )
 
-    os.makedirs('/tmp/ajet', exist_ok=True)
-    assert os.path.exists('/tmp/ajet'), "Temporary directory /tmp/ajet cannot be create."
+    runtime_tmp_dir = os.getenv("AJET_IPC_DIR", "/tmp/agentjet")
+    os.makedirs(runtime_tmp_dir, exist_ok=True)
+    assert os.path.exists(runtime_tmp_dir), (f"Temporary directory {runtime_tmp_dir} cannot be created.")
 
     # let's begin the training process
     if args.backbone == "trinity":

@@ -411,7 +411,8 @@ def http_update_rollout_pool_information_and_fetch_instruction(
         logger.warning(f"Failed to update rollout pool information: {e} ({url})")
         return None
 
-
+ipc_dir = os.getenv("AJET_IPC_DIR", "/tmp/agentjet")
+os.makedirs(ipc_dir, exist_ok=True)
 def get_zmq_socket(config, episode_uuid: str, tag: str = ""):
     interchange_method = config.ajet.interchange_server.interchange_method
     if interchange_method == 'tcp':
@@ -419,7 +420,7 @@ def get_zmq_socket(config, episode_uuid: str, tag: str = ""):
         master_node_ip = get_master_node_ip()
         zmq_contect_address = f"tcp://{master_node_ip}:{find_free_port()}"
     elif interchange_method == 'ipc':
-        ipc_path = f"/tmp/ajet/{episode_uuid}-{tag}.sock"
+        ipc_path = f"{ipc_dir}/{episode_uuid}-{tag}.sock"
         zmq_contect_address = f"ipc://{ipc_path}"
     else:
         raise RuntimeError(f"Unknown interchange_method: {interchange_method}")
