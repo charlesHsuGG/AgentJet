@@ -12,5 +12,3 @@ You must not do this in-place, instead, please create another model.
 E.g., "/mnt/data_cpfs/xielipeng.xlp/models/Qwen3-8B" -> "/mnt/data_cpfs/xielipeng.xlp/models/Qwen3-8B-Keep-History"
 For all files within the original model path, please create symbolic links instead of copying files.
 With only one exception, the tokenizer config file, which should be copied and modified to change the chat template.
-
-

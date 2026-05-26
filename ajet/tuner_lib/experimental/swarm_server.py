@@ -14,7 +14,7 @@ from typing import Coroutine, Optional, Tuple, List
 from ajet.utils.process_killer import kill_process_tree
 from ajet.utils.sync_train_code import extract_ajet_zip
 from ajet.tuner_lib.experimental.swarm_overwatch_utils import CurrentBatchRolloutPoolInformation
-from ajet.tuner_lib.experimental.interchange_utils import DEBUG, VERBOSE, CLIENT_ACTIVE_TIMEOUT
+from ajet.tuner_lib.experimental.interchange_utils import DEBUG, VERBOSE
 from ajet.tuner_lib.experimental.interchange_utils import (
     SyncTrainConfigRequest,
     ClaimEpisodeRequest,

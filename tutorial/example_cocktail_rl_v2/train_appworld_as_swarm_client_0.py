@@ -7,7 +7,6 @@ python -m tutorial.example_cocktail_rl_v2.train_appworld_as_swarm_client_0
 
 from __future__ import annotations
 
-import os
 import random
 from typing import Iterator, List, Optional
 

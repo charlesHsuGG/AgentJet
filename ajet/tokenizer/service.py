@@ -20,7 +20,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Optional
+from typing import Optional
 
 import msgpack
 import zmq

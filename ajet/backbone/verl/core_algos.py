@@ -187,7 +187,6 @@ class FixedKLController:
             current_kl (float): Current KL divergence value (unused).
             n_steps (int): Number of steps taken (unused).
         """
-        pass
 
 
 def get_kl_controller(kl_ctrl):
