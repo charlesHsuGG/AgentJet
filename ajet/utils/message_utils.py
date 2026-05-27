@@ -5,6 +5,7 @@ from loguru import logger
 
 _TOKEN_OVERFLOW_SIGNATURE = "Exceeded max model context length. token_overflow"
 
+
 def is_token_overflow_message(content) -> bool:
     """Return True if `content` represents the AgentJet token-overflow output
     (prompt would exceed max_model_len). Accepts a raw string, a message dict

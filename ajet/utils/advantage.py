@@ -26,7 +26,7 @@ def compute_grpo_outcome_advantage(
     # ]
     # --->
     # scores = [1,2,3]
-    scores = token_level_rewards.sum(dim=-1)    #  (bs, response_length)
+    scores = token_level_rewards.sum(dim=-1)  # (bs, response_length)
 
     id2score = defaultdict(list)
     id2mean = {}

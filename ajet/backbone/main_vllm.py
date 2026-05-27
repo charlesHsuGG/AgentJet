@@ -136,6 +136,7 @@ class ChatCompletionScheduler:
         )
         return messages
 
+
 def run(config):
     from ajet.task_reader import RouterTaskReader
 
@@ -158,7 +159,6 @@ def run(config):
         llm_mode="remote",
         tokenizer=async_rollout_manager.tokenizer,
     )
-
 
     task_reader = RouterTaskReader(
         config.ajet.task_reader.type,

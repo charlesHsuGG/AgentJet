@@ -102,7 +102,7 @@ class ExtendedMessage:
 
         # text content to compare when timeline merging
         self._text_content_for_compare = ""
-        self.generate_content_for_compare(content = self.content)
+        self.generate_content_for_compare(content=self.content)
 
         self.eos_token_id = tokenizer.eos_token_id
 

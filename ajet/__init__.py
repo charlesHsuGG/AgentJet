@@ -22,6 +22,7 @@ _ATTR_MAPPING = {
     "bp": "vscode_conditional_breakpoint"
 }
 
+
 def __getattr__(name):
     if name in _LAZY_IMPORTS:
         import importlib

@@ -3,12 +3,11 @@ import shlex
 import subprocess
 import time
 
-
 # Canonical autokill keyword set. The string is `|`-separated to match the
 # `--kill` CLI flag, which expects `kw1|kw2|...`. Every site that wants the
 # "kill all training-related processes" behavior must import this constant
 # rather than re-declaring the literal.
-AUTOKILL_KEYWORDS = "ray|vllm|VLLM|python"
+AUTOKILL_KEYWORDS = "ray|vllm|VLLM|sglang|SGLANG|python"
 
 
 def kill_ray_processes():

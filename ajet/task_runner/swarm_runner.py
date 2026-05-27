@@ -1,25 +1,27 @@
 
 import atexit
 import json
-import zmq
 import os
-from ajet.tuner import AjetTuner
-from ajet.schema.task import WorkflowOutput
-from ajet.context_tracker.multiagent_tracking import MultiAgentContextTracker
-from ajet.context_tracker.single_agent_tracking import SingleAgentContextTracker
-from ajet.schema.task import WorkflowTask
-from ajet.schema.trajectory import Reward
-from ajet.task_runner.base_runner import BaseAgentRunner
-from ajet.utils.retry import SwarmReceiveAbortException
-from ajet.tuner_lib.experimental.interchange_utils import http_register_episode, get_zmq_socket
-from ajet.tuner_lib.experimental.interchange_utils import DEBUG
-from loguru import logger
-from ajet import Workflow
 from typing import Callable
 
+import zmq
+from loguru import logger
+
+from ajet import Workflow  # pylint: disable=no-name-in-module
+from ajet.context_tracker.multiagent_tracking import MultiAgentContextTracker
+from ajet.context_tracker.single_agent_tracking import \
+    SingleAgentContextTracker
+from ajet.schema.task import WorkflowOutput, WorkflowTask
+from ajet.schema.trajectory import Reward
+from ajet.task_runner.base_runner import BaseAgentRunner
+from ajet.tuner import AjetTuner
+from ajet.tuner_lib.experimental.interchange_utils import (
+    DEBUG, get_zmq_socket, http_register_episode)
+from ajet.utils.retry import SwarmReceiveAbortException
 
 context = zmq.Context()
 atexit.register(context.term)
+
 
 class SwarmRunner(BaseAgentRunner):
 
@@ -31,9 +33,9 @@ class SwarmRunner(BaseAgentRunner):
         openai_base_url: str,
         openai_api_key: str,
         context_tracker: SingleAgentContextTracker,
-        tuner:AjetTuner,
-        should_exit_soft:Callable,
-        should_exit_hard:Callable
+        tuner: AjetTuner,
+        should_exit_soft: Callable,
+        should_exit_hard: Callable
     ) -> WorkflowOutput | None:
         """Register the episode as ready in the Swarm data interchange center."""
         # parse episode_uuid, openai_base_url, openai_api_key
@@ -47,15 +49,16 @@ class SwarmRunner(BaseAgentRunner):
             should_exit_soft=should_exit_soft,
         )
         if not success:
-            observation_window["info"][task_thread_index] += f"[SKIP REGISTER_EPISODE!]\n"
-            return None # type: ignore
+            observation_window["info"][task_thread_index] += "[SKIP REGISTER_EPISODE!]\n"
+            return None  # type: ignore
 
-        if DEBUG: logger.info(f"zmq_listen_result_addr: {zmq_listen_result_addr}")
+        if DEBUG:
+            logger.info(f"zmq_listen_result_addr: {zmq_listen_result_addr}")
 
         # begin wait for result
         zmq_socket = zmq.Context().socket(zmq.REP)
         zmq_socket.bind(zmq_listen_result_addr)
-        zmq_socket.setsockopt(zmq.RCVTIMEO, 1*1000)  # 1 second timeout for REP
+        zmq_socket.setsockopt(zmq.RCVTIMEO, 1 * 1000)  # 1 second timeout for REP
 
         speicial_messages = [
             "RUNNER.SPECIAL.RESET_CONTEXT_TRACKER",
@@ -75,10 +78,10 @@ class SwarmRunner(BaseAgentRunner):
                 #   <expect>: "RUNNER.SPECIAL.RESET_CONTEXT_TRACKER"
                 try:
                     message = zmq_socket.recv_string()
-                except zmq.Again as e:
+                except zmq.Again:
                     if should_exit_hard():
                         # logger.warning(f'{episode_uuid} Exiting workflow due to should_exit_hard signal.')
-                        observation_window["info"][task_thread_index] += f"[RESET CONTEXT TRACKER!]\n"
+                        observation_window["info"][task_thread_index] += "[RESET CONTEXT TRACKER!]\n"
                         context_tracker.reset()
                         raise SwarmReceiveAbortException(f"Episode {episode_uuid} aborted due to system exit.")
                     else:
@@ -89,13 +92,13 @@ class SwarmRunner(BaseAgentRunner):
                     break
                 elif message == "RUNNER.SPECIAL.RESET_CONTEXT_TRACKER":
                     logger.warning(f"Received reset command for episode {episode_uuid}.")
-                    observation_window["info"][task_thread_index] += f"[EXPLICIT RESET CONTEXT TRACKER!]\n"
+                    observation_window["info"][task_thread_index] += "[EXPLICIT RESET CONTEXT TRACKER!]\n"
                     context_tracker.reset()
                     zmq_socket.send_string("ack")
                     continue
                 elif message == "RUNNER.SPECIAL.ABORT":
                     logger.warning(f"Received abort command for episode {episode_uuid}.")
-                    observation_window["info"][task_thread_index] += f"[EXPLICIT ABORT!]\n"
+                    observation_window["info"][task_thread_index] += "[EXPLICIT ABORT!]\n"
                     context_tracker.reset()
                     zmq_socket.send_string("ack")
                     return None
@@ -105,7 +108,7 @@ class SwarmRunner(BaseAgentRunner):
             final_output = WorkflowOutput(**json.loads(message))
             reward = final_output.reward
             logger.success(f"Received workflow output for episode {episode_uuid} (Reward: {reward})")
-            observation_window["info"][task_thread_index] += f"[Received workflow output]\n"
+            observation_window["info"][task_thread_index] += "[Received workflow output]\n"
 
         except Exception as exc:
             raise exc
@@ -113,10 +116,10 @@ class SwarmRunner(BaseAgentRunner):
         finally:
             tuner.terminate_episode()   # this is very important to avoid resource leak
             zmq_socket.close()
-            if ipc_path and os.path.exists(ipc_path): os.remove(ipc_path)
+            if ipc_path and os.path.exists(ipc_path):
+                os.remove(ipc_path)
 
         return final_output
-
 
     def execute(self, workflow_task: WorkflowTask) -> SingleAgentContextTracker:
 
@@ -141,7 +144,7 @@ class SwarmRunner(BaseAgentRunner):
             llm_inference_fn=self.llm_inference_fn,
             tokenizer=self.tokenizer,
             config=self.config,
-            workflow_task = workflow_task,
+            workflow_task=workflow_task,
             **hooks,
         )
         # tuner will handle the communication and provide `baseurl_apikey`
@@ -160,8 +163,8 @@ class SwarmRunner(BaseAgentRunner):
 
         # wait for remote client to return workflow output
         workflow_output: WorkflowOutput | None = self.register_episode_and_wait_output(
-            task_thread_index = workflow_task.task_thread_index,
-            observation_window = observation_window,
+            task_thread_index=workflow_task.task_thread_index,
+            observation_window=observation_window,
             episode_uuid=context_tracker.episode_uuid,
             openai_base_url=base_url,
             openai_api_key=api_key,
@@ -171,12 +174,14 @@ class SwarmRunner(BaseAgentRunner):
             should_exit_hard=should_exit_hard,
         )
         if not workflow_output:
-            observation_window["info"][task_thread_index] += f"[No workflow output received, returning]\n"
+            observation_window["info"][task_thread_index] += "[No workflow output received, returning]\n"
             return None  # type: ignore
 
         if len(context_tracker.saved_timelines) == 0:
-            logger.warning(f"Workflow output received for episode {context_tracker.episode_uuid}, but no timelines were saved in context tracker. This may indicate an issue with the workflow execution or the way timelines are being tracked.")
-            observation_window["info"][task_thread_index] += f"[Workflow output received but no timelines were saved in context tracker, returning]\n"
+            logger.warning(
+                f"Workflow output received for episode {context_tracker.episode_uuid}, but no timelines were saved in context tracker. "
+                "This may indicate an issue with the workflow execution or the way timelines are being tracked.")
+            observation_window["info"][task_thread_index] += "[Workflow output received but no timelines were saved in context tracker, returning]\n"
             return None  # type: ignore
 
         # the most important thing is to fix task_id to client task_id, set task_id to workflow_task and context_tracker task_id

@@ -1,6 +1,5 @@
 from typing import List
 
-
 from ajet.context_tracker.single_agent_tracking import ExtendedMessage
 
 
@@ -18,7 +17,7 @@ def is_timeline_mergeable(
     can_merge = False
     if len(source_timeline) >= len(target_timeline):
         all_msg_match = True
-        for i in range(len(target_timeline)):
+        for i in range(len(target_timeline)):  # pylint: disable=consider-using-enumerate
             if timeline_compare_level == "text":
                 same = (
                     source_timeline[i].text_content_for_compare
@@ -42,8 +41,6 @@ def is_timeline_mergeable(
 
         if all_msg_match:
             can_merge = True
-
-
 
     # # developer only: code below is only for debugging (print a nice comparison table)
     # if debug:
@@ -74,8 +71,8 @@ def is_timeline_mergeable(
 
 
 def toggle_author_and_mask(
-    source_timeline: List[ExtendedMessage], # the longer timeline
-    target_timeline: List[ExtendedMessage], # the shorter timeline
+    source_timeline: List[ExtendedMessage],  # the longer timeline
+    target_timeline: List[ExtendedMessage],  # the shorter timeline
 ) -> List[ExtendedMessage]:
     # if any message in `target_timeline` is author == 'llm',
     # but same-index message in `source_timeline` is author != 'llm'

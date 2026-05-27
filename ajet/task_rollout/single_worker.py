@@ -1,23 +1,22 @@
 """Single worker primitives for environment rollouts."""
 
-import uuid
-import time
 import threading
-from typing import Literal
+import time
+import uuid
+from typing import Dict, List, Literal
 
 from loguru import logger
 from omegaconf import DictConfig
-from typing import Dict, List, Literal
-from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer
 
-from ajet.context_tracker.single_agent_tracking import SingleAgentContextTracker
+from ajet.context_tracker.single_agent_tracking import \
+    SingleAgentContextTracker
 from ajet.schema.task import Task, WorkflowTask
 from ajet.task_rollout.async_llm_bridge import AsyncLlmBridge
 from ajet.task_rollout.resource_keeper import ResourceKeeper
 from ajet.task_runner.general_runner import GeneralRunner
 from ajet.task_runner.swarm_runner import SwarmRunner
-from ajet.utils.retry import retry_with_backoff
-from ajet.utils.retry import SwarmReceiveAbortException
+from ajet.utils.retry import SwarmReceiveAbortException, retry_with_backoff
 from ajet.utils.sample import get_sample_params
 from ajet.utils.testing_utils import TestFailException, TestSuccessException
 
@@ -128,9 +127,9 @@ class BaseRolloutManager:
                 tracker = agent_runner.execute(
                     workflow_task=workflow_task,
                 )
-            except SwarmReceiveAbortException as exc:  # noqa: BLE001
-                observation_window["info"][task_thread_index] += f"[SwarmReceiveAbortException caught]\n"
-                return None # type: ignore
+            except SwarmReceiveAbortException:  # noqa: BLE001
+                observation_window["info"][task_thread_index] += "[SwarmReceiveAbortException caught]\n"
+                return None  # type: ignore
             except TestSuccessException as e:
                 logger.success(
                     f"env_worker.agent_flow completed with TestSuccessException: {e.args}"
@@ -148,7 +147,6 @@ class BaseRolloutManager:
         if tracker is not None:
             assert tracker.episode_uuid == episode_uuid, "Tracker episode UUID does not match workflow task episode UUID"
         return tracker
-
 
     def rollout_env_worker_loop(
         self,

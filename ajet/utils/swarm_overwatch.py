@@ -9,15 +9,16 @@ from typing import Optional
 
 import httpx
 import numpy as np
-from rich.console import Console
-from rich.live import Live
-from rich.table import Table
-from rich.panel import Panel
-from rich.layout import Layout
-from rich.text import Text
 from loguru import logger
+from rich.console import Console
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
-from ajet.tuner_lib.experimental.swarm_overwatch_utils import CurrentBatchRolloutPoolInformation
+from ajet.tuner_lib.experimental.swarm_overwatch_utils import \
+    CurrentBatchRolloutPoolInformation
 
 VERBOSE_LOG_TTL_SECONDS = 30.0
 
@@ -132,11 +133,11 @@ class SwarmOverwatch:
 
         instr = info.swarm_client_instruction if info else {}
         active_clients = instr.get("active_clients", [])
-        agreed = sum(1 for c in active_clients if c.get("allowed_sync_weight"))
+        # agreed = sum(1 for c in active_clients if c.get("allowed_sync_weight"))
         total = len(active_clients)
         header_text.append(f"\nActive Clients: {total}", style="bold white")
         if total:
-            parts = [f"{c.get('client_uuid','?')[:8]}{'✓' if c.get('allowed_sync_weight') else ''}" for c in active_clients[:8]]
+            parts = [f"{c.get('client_uuid', '?')[:8]}{'✓' if c.get('allowed_sync_weight') else ''}" for c in active_clients[:8]]
             suffix = f", +{total - 8} more" if total > 8 else ""
             header_text.append(f"  [{', '.join(parts)}{suffix}]", style="cyan")
 
@@ -358,7 +359,7 @@ class SwarmOverwatch:
                 task_id = details.get("task_id")
                 if task_id:
                     unique_tasks.add(task_id)
-            num_tasks = len(unique_tasks)
+            # num_tasks = len(unique_tasks)
             title = f"{title_prefix}Running Episodes (Episodes: {num_episodes})"
 
         table = Table(
@@ -561,7 +562,6 @@ class SwarmOverwatch:
 
         return layout
 
-
     def display_latest_llm_call(self):
         while True:
             response = httpx.post(f"{self.server_url}/replay_latest_llm_call", timeout=30.0)
@@ -586,23 +586,23 @@ class SwarmOverwatch:
                         if isinstance(content, list):
                             content = content[0].get('text', '')
                         if content.count('\n') >= hide_when_more_than_n_line_break:
-                            content = content.replace('\n',' ')[:200] + " ....."
+                            content = content.replace('\n', ' ')[:200] + " ....."
                         else:
-                            content = content.replace('\n',' ')
+                            content = content.replace('\n', ' ')
                         input_items += f"[bold blue]@{role}:[/bold blue] {content}\n"
                     for item in output['choices']:
                         role = item['message']['role']
                         content = item['message']['content']
                         if content.count('\n') >= hide_when_more_than_n_line_break:
-                            content = content.replace('\n',' ')[:200] + " ....."
+                            content = content.replace('\n', ' ')[:200] + " ....."
                         else:
-                            content = content.replace('\n',' ')
+                            content = content.replace('\n', ' ')
                         output_items += f"[bold red]@{role}:[/bold red] {content}\n"
-                    self.console.print(f"\n-------------------------------------------------------------")
+                    self.console.print("\n-------------------------------------------------------------")
                     self.console.print(f"\n[bold green]Input Simlified:[/bold green]\n{input_items}")
                     self.console.print(f"\n[bold green]Output Simlified:[/bold green]\n{output_items}")
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"Error occurred while simplifying input/output: {e}")
                 time.sleep(5)
 
     def choose_run(self) -> str:
@@ -652,7 +652,7 @@ class SwarmOverwatch:
             self.console.print(
                 "[bold green]Starting Swarm Overwatch...[/bold green]"
             )
-            self.console.print(f"[dim]Press Ctrl+C to exit[/dim]\n")
+            self.console.print("[dim]Press Ctrl+C to exit[/dim]\n")
             time.sleep(1)
 
             while True:

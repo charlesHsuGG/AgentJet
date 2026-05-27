@@ -28,6 +28,7 @@ from ajet.tuner_lib.experimental.interchange_utils import (
     CurrentBatchRolloutPoolInformation, SwarmClientInstruction,
     http_change_engine_status,
     http_update_rollout_pool_information_and_fetch_instruction)
+from ajet.utils.async_utils import IterationSafeDict
 
 
 def spawn_thread_shared_observation_window(n_threads) -> Dict[str, List[int | bool | str]]:
@@ -336,7 +337,8 @@ class DynamicRolloutManager(BaseRolloutManager):
                 if (len(ct_list) >= rollout_n):
                     total_completed_tasks += 1
                     all_equal = all(x == task_cmd_reward_array[0] for x in task_cmd_reward_array)
-                    if all_equal: continue
+                    if all_equal:
+                        continue
                     total_completed_non_dummy_tasks += 1
             return {
                 "total_completed_episodes": total_completed_episodes,
@@ -346,13 +348,13 @@ class DynamicRolloutManager(BaseRolloutManager):
 
         def enough_sample_stop_condition(completed_task_id_map_ct) -> bool:
             # ajet.swarm_mode_sample_collection_method == "rollout_until_finish_enough_episodes"
-            counts = count_tasks(completed_task_id_map_ct, rollout_n=rollout_n)
+            counts = count_tasks(completed_task_id_map_ct)
             total_completed_episodes = counts["total_completed_episodes"]
             return (total_completed_episodes >= n_batch_task * rollout_n)
 
         def enough_finished_task_stop_condition(completed_task_id_map_ct) -> bool:
             # ajet.swarm_mode_sample_collection_method == "rollout_until_finish_enough_tasks"
-            counts = count_tasks(completed_task_id_map_ct, rollout_n=rollout_n)
+            counts = count_tasks(completed_task_id_map_ct)
             total_completed_episodes = counts["total_completed_episodes"]
             total_completed_tasks = counts["total_completed_tasks"]
             if total_completed_episodes > (self.config.ajet.swarm_mode_sample_collection_max_cached_episodes // 5 * 4):
@@ -488,7 +490,7 @@ class DynamicRolloutManager(BaseRolloutManager):
                 completed_tasks_rewards[task_id] = rewards
             buffer += "\n"
             buffer += "\n"
-            counts = count_tasks(completed_task_id_map_ct, rollout_n=rollout_n)
+            counts = count_tasks(completed_task_id_map_ct)
             buffer += f"Total completed episodes: {counts['total_completed_episodes']} (target {n_batch_task * rollout_n})\n"
             buffer += f"Total completed tasks: {counts['total_completed_tasks']} (target {n_batch_task})\n"
             buffer += f"Total completed non-dummy tasks: {counts['total_completed_non_dummy_tasks']} (target {n_batch_task})\n"

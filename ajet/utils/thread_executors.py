@@ -1,8 +1,10 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm import tqdm
-from ajet.utils.sington import singleton
-from loguru import logger
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from loguru import logger
+from tqdm import tqdm
+
+from ajet.utils.sington import singleton
 
 
 @singleton
@@ -12,7 +14,6 @@ class SharedInterchangeThreadExecutor:
 
     def get_shared_executor(self) -> ThreadPoolExecutor:
         return self.executor
-
 
 
 @singleton
@@ -42,6 +43,7 @@ class BoundedThreadPoolExecutor:
 
     def shutdown(self, wait=True):
         self.executor.shutdown(wait=wait)
+
 
 class PeriodicDrainThreadPoolExecutor:
     """A ThreadPoolExecutor that bounds the number of pending tasks via a semaphore."""

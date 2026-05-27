@@ -75,7 +75,9 @@ def dump_yaml_config(cfg: DictConfig, yaml_fp: str):
     return yaml_fp
 
 
-class NotFound(object): pass
+class NotFound(object):
+    pass
+
 
 def _dive_to_fetch_value(config, dotted_key):
     keys = dotted_key.split(".")
@@ -214,7 +216,8 @@ def align_parameter_safe_guard(config: dict, backbone: str) -> dict:
             while new_train_batch_size % fsdp_world_size != 0:
                 new_train_batch_size += 1
             logger.warning(
-                f"[Warning]: trinity backbone detected, but train_batch_size {train_batch_size} is not divisible by fsdp_world_size {fsdp_world_size}. Automatically adjust train_batch_size to {new_train_batch_size}."
+                f"[Warning]: trinity backbone detected, but train_batch_size {train_batch_size} is not divisible by fsdp_world_size {fsdp_world_size}. "
+                f"Automatically adjust train_batch_size to {new_train_batch_size}."
             )
             config["buffer"]["train_batch_size"] = new_train_batch_size
 
@@ -353,7 +356,7 @@ def prepare_experiment_config(yaml_path, exp_base_dir, backbone, override_param_
     if not os.path.exists(exp_base):
         raise FileNotFoundError(f"Configuration file not found: {exp_base}")
 
-    ## 0. read yaml & get experiment_name
+    # 0. read yaml & get experiment_name
     with open(yaml_path, "r", encoding="utf-8") as file:
         config = input_yaml_config = yaml.safe_load(file)
     try:
@@ -381,7 +384,7 @@ def prepare_experiment_config(yaml_path, exp_base_dir, backbone, override_param_
         logger.info(f"Experiment Yaml Dir: {yaml_backup_dst}")
         logger.info("----------------------------------------")
 
-    ## 1. check exp_base/backup exist
+    # 1. check exp_base/backup exist
     if not os.path.exists(backup_dir):
         os.makedirs(backup_dir)
     else:
@@ -392,7 +395,7 @@ def prepare_experiment_config(yaml_path, exp_base_dir, backbone, override_param_
             )
             time.sleep(1)
 
-    ## 2. copy files to backup
+    # 2. copy files to backup
     BACK_TARGETS = os.environ.get("BACK_TARGETS", "").split(",")
     BACK_TARGETS = [p for p in BACK_TARGETS if os.path.exists(p)]
 
@@ -406,11 +409,11 @@ def prepare_experiment_config(yaml_path, exp_base_dir, backbone, override_param_
             dirs_exist_ok=True,
         )
 
-    ## 3. copy yaml to backup
+    # 3. copy yaml to backup
     yaml_backup_src = yaml_path
     shutil.copyfile(yaml_backup_src, yaml_backup_dst)
 
-    ## 4. edit new yaml
+    # 4. edit new yaml
     experiment_dir = f"{exp_base_dir}/{exp_name}"
     config = read_ajet_hierarchical_config(
         yaml_backup_dst,

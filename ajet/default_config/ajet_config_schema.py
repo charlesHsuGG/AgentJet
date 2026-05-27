@@ -50,6 +50,7 @@ class AjetTrainerCommon:
     # by default (current behaviour: baseline is the mean over all samples).
     advantage_estimation_episode_level: bool = False
 
+
 @dataclass
 class AjetModel:
     path: str = "/path/to/model/such/as/Qwen/Qwen2___5-14B-Instruct"
@@ -105,6 +106,8 @@ class HuggingfaceDatRepo:
 @dataclass
 class JsonlTrainingFp:
     file_path: str = ""
+
+
 @dataclass
 class JsonlDatasetFile:
     training: JsonlTrainingFp = field(default_factory=JsonlTrainingFp)
@@ -116,6 +119,7 @@ class AjetTaskReader:
     type: str = "huggingface_dat_repo"
     huggingface_dat_repo: HuggingfaceDatRepo = field(default_factory=HuggingfaceDatRepo)
     jsonl_dataset_file: JsonlDatasetFile = field(default_factory=JsonlDatasetFile)
+
 
 @dataclass
 class AjetTimelineMergingPolicy:
@@ -147,6 +151,7 @@ class AjetDefaultConfig:
     swarm_mode_sample_collection_method: str = "rollout_until_finish_enough_tasks"
     execute_test: bool = False
     interchange_server: AjetInterchangeServer = field(default_factory=AjetInterchangeServer)
+
 
 @dataclass
 class Config:

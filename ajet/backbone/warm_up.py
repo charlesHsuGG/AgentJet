@@ -7,13 +7,14 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from ajet.utils.async_utils import (
-    apply_httpx_aclose_patch,
-    silence_hermes_tool_parser_loggers,
-    suppress_httpx_aclose_exception,
-)
+
+from ajet.utils.async_utils import (apply_httpx_aclose_patch,
+                                    silence_hermes_tool_parser_loggers,
+                                    suppress_httpx_aclose_exception)
+
 apply_httpx_aclose_patch()
 suppress_httpx_aclose_exception()
+
 
 def init_parallel_rollout_logger(experiment_dir):
     """Initialize the logger with the given configuration."""
@@ -27,7 +28,7 @@ def init_parallel_rollout_logger(experiment_dir):
     final_log_path = os.path.join(
         experiment_dir,
         datetime.now().strftime("%Y_%m_%d_%H_%M"),
-        os.uname().nodename, # machine host name
+        os.uname().nodename,  # machine host name
     )
     os.environ["BEST_LOGGER_PATH"] = final_log_path
     non_console_mods = ["rollout", "token_clip", "bad_case"]
@@ -41,7 +42,6 @@ def init_parallel_rollout_logger(experiment_dir):
 
     silence_hermes_tool_parser_loggers()
     logging.getLogger("httpx").setLevel(logging.WARNING)
-
 
 
 def warm_up_task_judge_when_needed(config):
@@ -99,7 +99,7 @@ def warm_up_process(config):
     if "PROCESS_LEVEL_WARMUP_INIT" in os.environ:
         return
     os.environ["PROCESS_LEVEL_WARMUP_INIT"] = "1"
-    experiment_name = config.ajet.experiment_name
+    # experiment_name = config.ajet.experiment_name
     experiment_dir = config.ajet.experiment_dir
     init_parallel_rollout_logger(experiment_dir)
     warm_up_task_judge_when_needed(config)

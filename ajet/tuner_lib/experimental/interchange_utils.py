@@ -1,16 +1,18 @@
-import os
-import time
-import httpx
 import base64
 import json
-
+import os
+import time
 from typing import List
-from pydantic import BaseModel, Field
+
+import httpx
 from loguru import logger
+from pydantic import BaseModel, Field
+
 from ajet.schema.task import WorkflowOutput
+from ajet.tuner_lib.experimental.swarm_overwatch_utils import \
+    CurrentBatchRolloutPoolInformation
 from ajet.utils.networking import find_free_port, get_host_ip
 from ajet.utils.retry import retry_with_backoff
-from ajet.tuner_lib.experimental.swarm_overwatch_utils import CurrentBatchRolloutPoolInformation
 
 VALID_STATUSES = [
     "ENGINE.OFFLINE",
@@ -22,6 +24,7 @@ VALID_STATUSES = [
 ]
 
 API_KEY_PREFIX = "sk-ajet-"
+
 
 class SyncTrainConfigRequest(BaseModel):
     yaml_as_string: str
@@ -40,6 +43,7 @@ class ClaimEpisodeRequest(BaseModel):
     discard_episode_timeout: float
     throttle_policy: SwarmThrottlePolicy | None = None
 
+
 class ClaimEpisodeResponse(BaseModel):
     success: bool
     client_uuid: str
@@ -48,16 +52,20 @@ class ClaimEpisodeResponse(BaseModel):
     openai_api_key: str = ""
     fail_cause: str = ""
 
+
 class CanContinueEpisodeRequest(BaseModel):
     client_uuid: str
     episode_uuid: str
+
 
 class CheckWhetherEpisodeClaimedRequest(BaseModel):
     episode_uuid: str
     unregister_if_not_claimed: bool = False
 
+
 class CanContinueEpisodeResponse(BaseModel):
     can_continue: bool
+
 
 class EndEpisodeRequest(BaseModel):
     client_uuid: str
@@ -65,6 +73,7 @@ class EndEpisodeRequest(BaseModel):
     workflow_output: WorkflowOutput
     task_id: str
     declare_client_active: bool = True
+
 
 class EndEpisodeResponse(BaseModel):
     success: bool
@@ -84,12 +93,15 @@ class EpisodeStatus(BaseModel):
     debug_log: List[str] = []
     optional_task_id: str = ""
 
+
 class EpisodeBufferResponse(BaseModel):
     buffer: List[EpisodeStatus]
+
 
 class BoolResponse(BaseModel):
     success: bool
     failure_reason: str = ""
+
 
 class RegisterEpisodeRequest(BaseModel):
     episode_uuid: str
@@ -100,8 +112,8 @@ class RegisterEpisodeRequest(BaseModel):
 
 class UpdateEngineStatusRequest(BaseModel):
     engine_status: str = ""
-    engine_status_detail: str|None = None
-    global_step: int|None = None
+    engine_status_detail: str | None = None
+    global_step: int | None = None
 
 
 class PushVerboseLogRequest(BaseModel):
@@ -293,7 +305,7 @@ def get_interchange_server_url(config):
     return base_url
 
 
-def http_change_engine_status(config, new_status: str, new_status_detail: str|None = None, global_step: int|None = None):
+def http_change_engine_status(config, new_status: str, new_status_detail: str | None = None, global_step: int | None = None):
     if new_status not in VALID_STATUSES:
         raise ValueError(f"Invalid engine status: {new_status}")
 
@@ -348,7 +360,8 @@ def http_register_episode(config,
     if not result.get('success'):
         logger.warning(f"Failed to register episode {episode_uuid}")
         return None
-    if DEBUG: logger.info(f"Successfully registered episode {episode_uuid}")
+    if DEBUG:
+        logger.info(f"Successfully registered episode {episode_uuid}")
 
     return True
 
@@ -411,8 +424,11 @@ def http_update_rollout_pool_information_and_fetch_instruction(
         logger.warning(f"Failed to update rollout pool information: {e} ({url})")
         return None
 
+
 ipc_dir = os.getenv("AJET_IPC_DIR", "/tmp/agentjet")
 os.makedirs(ipc_dir, exist_ok=True)
+
+
 def get_zmq_socket(config, episode_uuid: str, tag: str = ""):
     interchange_method = config.ajet.interchange_server.interchange_method
     if interchange_method == 'tcp':
@@ -425,7 +441,6 @@ def get_zmq_socket(config, episode_uuid: str, tag: str = ""):
     else:
         raise RuntimeError(f"Unknown interchange_method: {interchange_method}")
     return zmq_contect_address, ipc_path
-
 
 
 def generate_auth_token(agent_name, target_tag, episode_uuid, episode_address):

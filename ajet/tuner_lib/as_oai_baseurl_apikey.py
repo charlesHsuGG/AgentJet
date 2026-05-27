@@ -1,16 +1,21 @@
 import os
-from typing import Any, TYPE_CHECKING
-from pydantic import BaseModel, Field
+from typing import TYPE_CHECKING, Any
+
 from openai.resources.chat.chat import AsyncChat
 from openai.resources.completions import AsyncCompletions
-from ajet.tuner_lib.experimental.interchange_utils import generate_auth_token, get_master_node_ip
+from pydantic import BaseModel, Field
+
+from ajet.tuner_lib.experimental.interchange_utils import (generate_auth_token,
+                                                           get_master_node_ip)
 
 if TYPE_CHECKING:
-    from ajet.context_tracker.multiagent_tracking import MultiAgentContextTracker
+    from ajet.context_tracker.multiagent_tracking import \
+        MultiAgentContextTracker
+
 
 class MockAsyncCompletions(AsyncCompletions):
-    async def create(self, *args, **kwargs) -> Any: # type: ignore
-        return await self._client.create(*args, **kwargs) # type: ignore
+    async def create(self, *args, **kwargs) -> Any:  # type: ignore
+        return await self._client.create(*args, **kwargs)  # type: ignore
 
 
 class MockAsyncChat(AsyncChat):

@@ -29,12 +29,12 @@ def retry_call(
             res = fn()
             if i > 0:
                 logger.info(
-                    f"{err_prefix} {action_name} [instance={instance_id}] succeed at try {i+1}/{max_retry}"
+                    f"{err_prefix} {action_name} [instance={instance_id}] succeed at try {i + 1}/{max_retry}"
                 )
             return res
         except Exception as e:
             logger.info(
-                f"{err_prefix} {action_name} [instance={instance_id}] retry {i+1}/{max_retry} failed: {e}"
+                f"{err_prefix} {action_name} [instance={instance_id}] retry {i + 1}/{max_retry} failed: {e}"
             )
             if i + 1 == max_retry:
                 logger.exception(

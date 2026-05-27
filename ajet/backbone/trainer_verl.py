@@ -163,6 +163,7 @@ def import_or_export_data_proto(batch: DataProto, direction: str = "export", fil
     else:
         raise ValueError(f"direction must be 'import' or 'export', got '{direction}'")
 
+
 def compute_grpo_episode_level_outcome_advantage(
     token_level_rewards: torch.Tensor,
     response_mask: torch.Tensor,
@@ -197,7 +198,7 @@ def compute_grpo_episode_level_outcome_advantage(
     Returns:
         (advantages, returns) - both (bsz, response_length); identical, as in GRPO.
     """
-    scores = token_level_rewards.sum(dim=-1)    #  (bs, response_length)
+    scores = token_level_rewards.sum(dim=-1)  # (bs, response_length)
     bsz = scores.shape[0]
 
     with torch.no_grad():
