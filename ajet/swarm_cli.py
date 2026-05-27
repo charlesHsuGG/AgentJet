@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from loguru import logger
 
+from ajet.utils.cleaner import AUTOKILL_KEYWORDS, fast_kill_by_keyword_bash
 from ajet.utils.config_utils import prepare_experiment_config
 from ajet.utils.launch_utils import (
     dict_to_namespace,
@@ -41,8 +42,24 @@ def start_swarm_server(env, config, port):
 
 def cmd_start(args):
     """Handle the 'start' subcommand."""
+    if args.autokill:
+        args.kill = AUTOKILL_KEYWORDS
+
+    if args.kill:
+        logger.info(f"Killing processes matching keywords: {args.kill}")
+        for keyword in args.kill.split("|"):
+            logger.info(f"Killing processes matching keyword: {keyword}")
+            killed_pids = fast_kill_by_keyword_bash(keyword)
+            if killed_pids:
+                logger.success(
+                    f"Successfully killed processes with PIDs: {killed_pids}"
+                )
+            else:
+                logger.warning(f"No processes found matching keyword: {keyword}")
+
     # Use default config if not provided
-    exp_base_dir = args.exp_dir or DEFAULT_DIR
+    exp_base_dir = DEFAULT_DIR
+
     if not args.conf:
         args.conf = os.path.abspath(
             os.path.join(
@@ -76,7 +93,7 @@ def cmd_start(args):
             self.swarm_server = True
             self.swarm_overwatch = ""
             self.debug = debug
-    swarm_args = SwarmArgs(args.conf, "verl", args.exp_dir, args.debug)
+    swarm_args = SwarmArgs(args.conf, "verl", exp_base_dir, args.debug)
     env, exp_config = setup_environment_vars(swarm_args, exp_config, main_yaml_fp)
 
     # Start swarm server
@@ -112,13 +129,6 @@ def main():
         help="Path to configuration file",
     )
     parser_start.add_argument(
-        "--exp-dir",
-        type=str,
-        default=DEFAULT_DIR,
-        required=False,
-        help="Path to experiment directory",
-    )
-    parser_start.add_argument(
         "--debug",
         "--db",
         type=str,
@@ -126,6 +136,20 @@ def main():
         required=False,
         help="Debug tags; enables Ray post-mortem and DEBUG_TAGS env",
     )
+    parser_start.add_argument(
+        "--kill",
+        type=str,
+        default="",
+        required=False,
+        help="list of keywords for killing processes",
+    )
+    parser_start.add_argument(
+        "--autokill",
+        action="store_true",
+        default=False,
+        help="Kill system processes (ray + vllm + python) that may block the current experiment",
+    )
+    logger.info("test")
 
     parser_start.set_defaults(func=cmd_start)
 

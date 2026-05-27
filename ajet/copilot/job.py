@@ -48,7 +48,8 @@ class AgentJetJob:
         project_name: Name of the project for organizing experiments.
         experiment_name: Unique name for this specific experiment run.
         logging: "swanlab", "tensorboard", etc
-        n_gpu: Number of GPUs to use per node for training.
+        n_gpu: Number of GPUs to use **per node** for training.
+        nnodes: Number of nodes to use for training.
         model: Path or identifier of the model to train.
         algorithm: Advantage estimator algorithm (e.g., 'gae', 'vtrace').
         num_repeat: Tell swarm server how many repeated sample it should expect for a same task (same means task_id is identical).
@@ -67,12 +68,21 @@ class AgentJetJob:
                 whose ``num_repeat`` episodes do *not* all share the same reward. Tasks with uniform
                 reward (e.g. all 0 or all 1) produce zero advantage under GRPO and are skipped —
                 useful when the dataset contains many too-easy or too-hard prompts.
+              - "rollout_until_any_client_agree_sync_weight": defer the stop decision to the swarm
+                clients themselves. Stops as soon as **any** active swarm client invokes
+                ``SwarmClient.agree_sync_weight()``. A client is "active" once it has successfully
+                ``end_episode``'d at least one rewarded (non-abort) episode since the last weight
+                sync, and falls off the active list after 10 minutes of no chat-completion or
+                ``begin_episode`` activity.
+              - "rollout_until_all_clients_agree_sync_weight": like the above, but stops only when
+                **every** active swarm client has agreed (and there is at least one active client).
         max_env_worker: an estimation about how many episodes will be running in parallel (all swarm clients combined).
         backbone: Training backbone framework (e.g., 'verl').
         max_prompt_length: Maximum token length for input prompts (token length before the first llm-generated token, default 3000).
         max_response_length: Maximum token length for model responses (token length after the first llm-generated token, default 15000).
         max_response_length_in_one_turn: Maximum token length for model response in one turn (default 4096, should be <= max_response_length).
         max_model_len: Maximum total token length (prompt + response) the model can handle (bigger => more GPU memory), default 18000.
+        tensor_model_parallel_size: Tensor-parallel size for the vLLM rollout engine (default 1).
         max_num_seqs: Maximum number of sequences processed in parallel by each vLLM engine (default 64).
         mini_batch_num: Number of mini-batches to split training batch into (how many mini steps, i.e. how many times the `optimizer.step` should be executed, per big train batch).
         lora_rank: LoRA rank for low-rank adaptation (set > 0 to enable LoRA training, default 0 means disabled).
@@ -90,6 +100,7 @@ class AgentJetJob:
         val_print_to_markdown_file_path: Path to a file where validation metrics are appended after every validation pass (default None, disabled).
         train_print_to_markdown_file_path: Path to a file where training metrics are appended after every training step (default None, disabled).
         total_training_steps: Hard cap on total training steps. If None (default), training runs for `total_epochs` epochs.
+        timeline_compare_level: Comparison granularity used by the context tracker's timeline merging policy. One of 'text' (relaxed text compare, more aggressive merging, very low cost) or 'token' (strict token compare, less aggressive merging). Default 'text'.
     """
 
     def __init__(
@@ -101,6 +112,7 @@ class AgentJetJob:
         experiment_name: str | None = None,
         logging: str | None = None,
         n_gpu: int | None = None,
+        nnodes: int | None = None,
         model: str | None = None,
         algorithm: str | None = None,
         num_repeat: int | None = None,
@@ -113,6 +125,7 @@ class AgentJetJob:
         max_response_length: int | None = None,
         max_response_length_in_one_turn: int | None = None,
         max_model_len: int | None = None,
+        tensor_model_parallel_size: int | None = None,
         max_num_seqs: int | None = None,
         mini_batch_num: int | None = None,
         lora_rank: int | None = None,
@@ -130,6 +143,7 @@ class AgentJetJob:
         val_print_to_markdown_file_path: str | None = None,
         train_print_to_markdown_file_path: str | None = None,
         total_training_steps: int | None = None,
+        timeline_compare_level: str | None = None,
     ) -> None:
 
         if base_yaml_config is None:
@@ -166,6 +180,7 @@ class AgentJetJob:
 
         self.logging: str = cast(str, logging)
         self.n_gpu: int = cast(int, n_gpu)
+        self.nnodes: int = cast(int, nnodes)
         self.model: str = cast(str, model)
         self.algorithm: str = cast(str, algorithm)
         self.num_repeat: int = cast(int, num_repeat)
@@ -178,6 +193,7 @@ class AgentJetJob:
         self.max_response_length_in_one_turn: int = cast(int, max_response_length_in_one_turn)
         self.max_response_length: int = cast(int, max_response_length)
         self.max_model_len: int = cast(int, max_model_len)
+        self.tensor_model_parallel_size: int = cast(int, tensor_model_parallel_size)
         self.max_num_seqs: int = cast(int, max_num_seqs)
         self.mini_batch_num: int = cast(int, mini_batch_num)
         self.lora_rank: int = cast(int, lora_rank)
@@ -195,6 +211,7 @@ class AgentJetJob:
         self.val_print_to_markdown_file_path: str = cast(str, val_print_to_markdown_file_path)
         self.train_print_to_markdown_file_path: str = cast(str, train_print_to_markdown_file_path)
         self.total_training_steps: int = cast(int, total_training_steps)
+        self.timeline_compare_level: str = cast(str, timeline_compare_level)
 
         # see `ajet/default_config/ajet_swarm_default.yaml`
         overrides = {
@@ -205,6 +222,7 @@ class AgentJetJob:
             "ajet.trainer_common.logger":                   "logging",
             "ajet.model.path":                              "model",
             "ajet.trainer_common.n_gpus_per_node":          "n_gpu",
+            "ajet.trainer_common.nnodes":                   "nnodes",
             "ajet.trainer_common.algorithm.adv_estimator":  "algorithm",
             "ajet.rollout.num_repeat":                      "num_repeat",
             "ajet.data.train_batch_size":                   "batch_size",
@@ -216,6 +234,7 @@ class AgentJetJob:
             "ajet.data.max_response_length":                "max_response_length",
             "ajet.rollout.max_response_length_in_one_turn": "max_response_length_in_one_turn",
             "ajet.rollout.max_model_len":                   "max_model_len",
+            "ajet.rollout.tensor_model_parallel_size":      "tensor_model_parallel_size",
             "ajet.rollout.max_num_seqs":                    "max_num_seqs",
             "ajet.trainer_common.mini_batch_num":           "mini_batch_num",
             "ajet.lora.lora_rank":                          "lora_rank",
@@ -230,9 +249,10 @@ class AgentJetJob:
             "ajet.trainer_common.use_kl_in_reward":         "use_kl_in_reward",
             "ajet.trainer_common.kl_penalty_type":          "kl_penalty_type",
             "ajet.rollout.compute_madness_checklist":       "compute_madness_checklist",
-            "ajet.trainer_common.val_print_to_markdown_file_path":   "val_print_to_markdown_file_path",
-            "ajet.trainer_common.train_print_to_markdown_file_path": "train_print_to_markdown_file_path",
             "ajet.trainer_common.total_training_steps":     "total_training_steps",
+            "ajet.trainer_common.val_print_to_markdown_file_path":                  "val_print_to_markdown_file_path",
+            "ajet.trainer_common.train_print_to_markdown_file_path":                "train_print_to_markdown_file_path",
+            "ajet.context_tracker.timeline_merging_policy.timeline_compare_level":  "timeline_compare_level",
         }
 
         # if any value given in kwargs, override the corresponding value in config
@@ -267,6 +287,9 @@ class AgentJetJob:
                 raise ValueError("lr should be provided for lora training")
             if self.lr <= 1e-5:
                 raise ValueError(f"lr should usually be greater than 1e-5 for lora training, got {self.lr}")
+
+        if self.nnodes > 1 and self.swarm_mode:
+            self.config.ajet.interchange_server.interchange_method = "tcp"
 
         if self.backbone == "trinity":
             raise NotImplementedError("Trinity backbone is not yet supported in AgentJetJob.")

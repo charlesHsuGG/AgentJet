@@ -8,7 +8,7 @@ from typing import List
 from pydantic import BaseModel, Field
 from loguru import logger
 from ajet.schema.task import WorkflowOutput
-from ajet.utils.networking import find_free_port
+from ajet.utils.networking import find_free_port, get_host_ip
 from ajet.utils.retry import retry_with_backoff
 from ajet.tuner_lib.experimental.swarm_overwatch_utils import CurrentBatchRolloutPoolInformation
 
@@ -64,6 +64,7 @@ class EndEpisodeRequest(BaseModel):
     episode_uuid: str
     workflow_output: WorkflowOutput
     task_id: str
+    declare_client_active: bool = True
 
 class EndEpisodeResponse(BaseModel):
     success: bool
@@ -118,6 +119,138 @@ class VerboseLogsResponse(BaseModel):
     entries: List[VerboseLogEntry] = []
 
 
+class AgreeSyncWeightRequest(BaseModel):
+    client_uuid: str
+
+
+class ActiveSwarmClient(BaseModel):
+    """Server-tracked record for one active swarm client.
+
+    A swarm client enters this list once it has successfully `end_episode`'d
+    a rewarded (non-abort) episode since the last weight sync, and falls off
+    after `CLIENT_ACTIVE_TIMEOUT` seconds of no chat-completion /
+    `begin_episode` activity. The whole list is reset whenever the engine
+    leaves ROLLING/ROLLING_POST.
+
+    Used both as the swarm server's authoritative storage (single
+    `shared_mem_dict["active_swarm_clients"]: List[ActiveSwarmClient]` key)
+    and as the wire payload sent back to the trainer in
+    `SwarmClientInstruction`. Add future per-client signals (e.g.
+    `requested_pause`, custom metrics) here -- pydantic field defaults keep
+    the wire format backwards-compatible across server/trainer versions.
+
+    Fields:
+        client_uuid: the client_uuid as generated in `SwarmClient.__init__`.
+        last_activity_at: unix timestamp of the most recent chat-completion,
+            `begin_episode`, or `end_episode` from this client. Used by the
+            server's expiry sweep.
+        allowed_sync_weight: True iff this client has explicitly agreed to
+            the next weight sync via `SwarmClient.agree_sync_weight()`.
+    """
+    client_uuid: str
+    last_activity_at: float
+    allowed_sync_weight: bool = False
+
+
+class SwarmClientInstruction(BaseModel):
+    """Server -> trainer instruction returned alongside pool-info updates.
+
+    Fields:
+        active_clients: list of `ActiveSwarmClient` records, one per
+            currently active client.
+
+    Example wire payload:
+        ```json
+        {
+            "active_clients": [
+                {"client_uuid": "9f3c-...-aaaa", "last_activity_at": 1746513900.1, "allowed_sync_weight": true},
+                {"client_uuid": "9f3c-...-bbbb", "last_activity_at": 1746513912.4, "allowed_sync_weight": false},
+                {"client_uuid": "9f3c-...-cccc", "last_activity_at": 1746513918.7, "allowed_sync_weight": false}
+            ]
+        }
+        ```
+
+    Example trainer-side use (matches DynamicRolloutManager.rollout_swarm):
+        ```python
+        # rollout_until_any_client_agree_sync_weight
+        if any(c.allowed_sync_weight for c in instr.active_clients):
+            stop()
+
+        # rollout_until_all_clients_agree_sync_weight
+        if instr.active_clients and all(
+            c.allowed_sync_weight for c in instr.active_clients
+        ):
+            stop()
+        ```
+
+        For the payload above:
+          - "any" stop-condition evaluates True (one client agreed).
+          - "all" stop-condition evaluates False (two of three not yet agreed).
+    """
+    active_clients: List[ActiveSwarmClient] = []
+
+
+# Active-client tracking timeout (seconds): a client falls off the active list
+# if it has done no chat-completion or begin_episode call within this window.
+CLIENT_ACTIVE_TIMEOUT = 10 * 60
+
+
+# --------------------------------------------------------------------
+# active-client tracking helpers
+# --------------------------------------------------------------------
+# All active-client state lives behind a single shared_mem_dict key:
+#   "active_swarm_clients": List[ActiveSwarmClient]
+# (See `ActiveSwarmClient` for field semantics and lifecycle.) The helpers
+# below are imported by the swarm server's FastAPI routes and by the
+# OAI-mode chat-completion handler.
+
+
+def _refresh_client_activity(client_uuid: str, shared_mem_dict) -> None:
+    """If client is in the active list, refresh its last-activity timestamp.
+
+    Called on chat-completion and begin_episode (claim_episode). Does NOT
+    add the client to the list -- only end_episode (success, non-abort) does.
+    """
+    if not client_uuid:
+        return
+    clients: List[ActiveSwarmClient] = list(shared_mem_dict.get("active_swarm_clients", []))
+    for i, c in enumerate(clients):
+        if c.client_uuid == client_uuid:
+            clients[i] = c.model_copy(update={"last_activity_at": time.time()})
+            shared_mem_dict["active_swarm_clients"] = clients
+            return
+
+
+def _register_active_client(client_uuid: str, shared_mem_dict) -> None:
+    """Add client to the active list (idempotent) and refresh its timestamp."""
+    if not client_uuid:
+        return
+    clients: List[ActiveSwarmClient] = list(shared_mem_dict.get("active_swarm_clients", []))
+    now = time.time()
+    for i, c in enumerate(clients):
+        if c.client_uuid == client_uuid:
+            clients[i] = c.model_copy(update={"last_activity_at": now})
+            shared_mem_dict["active_swarm_clients"] = clients
+            return
+    clients.append(ActiveSwarmClient(client_uuid=client_uuid, last_activity_at=now))
+    shared_mem_dict["active_swarm_clients"] = clients
+
+
+def _expire_inactive_clients(shared_mem_dict) -> None:
+    """Drop clients whose last activity is older than CLIENT_ACTIVE_TIMEOUT."""
+    now = time.time()
+    clients: List[ActiveSwarmClient] = list(shared_mem_dict.get("active_swarm_clients", []))
+    if not clients:
+        return
+    kept = [c for c in clients if (now - c.last_activity_at) <= CLIENT_ACTIVE_TIMEOUT]
+    if len(kept) != len(clients):
+        shared_mem_dict["active_swarm_clients"] = kept
+
+
+def _reset_active_client_tracking(shared_mem_dict) -> None:
+    """Clear all active-client state."""
+    shared_mem_dict["active_swarm_clients"] = []
+
 
 DEBUG = False
 # DEBUG = True
@@ -125,6 +258,26 @@ DEBUG = False
 VERBOSE = True
 
 shared_http_client = httpx.Client(timeout=10.0)
+
+
+def get_master_node_ip() -> str:
+    master_node_ip = os.getenv("MASTER_NODE_IP", "").strip()
+    master_addr = os.getenv("MASTER_ADDR", "").strip()
+    network_interface = os.getenv("NETWORK_INTERFACE", "").strip()
+    if master_node_ip and master_node_ip not in {"localhost", "127.0.0.1", "0.0.0.0"}:
+        return master_node_ip
+    if master_addr:
+        return master_addr
+    # for interface_name in (network_interface, "net0", "eth0", "eno0"):
+    for interface_name in [network_interface]:
+        if not interface_name:
+            continue
+        interface_ip = get_host_ip(interface_name)
+        if interface_ip != "127.0.0.1":
+            return interface_ip
+    interface_ip = get_host_ip(None)
+    return master_node_ip or "localhost"
+
 
 def get_interchange_server_url(config):
     port = os.getenv("AJET_DAT_INTERCHANGE_PORT")
@@ -135,7 +288,7 @@ def get_interchange_server_url(config):
     if interchange_server_port != 'auto':
         port = str(int(interchange_server_port))
     assert port is not None, "AJET_DAT_INTERCHANGE_PORT env var must be set"
-    master_node_ip = os.getenv("MASTER_NODE_IP", "localhost")
+    master_node_ip = get_master_node_ip()
     base_url = f"http://{master_node_ip}:{port}"
     return base_url
 
@@ -204,7 +357,7 @@ def _get_interchange_server_url_from_env():
     port = os.getenv("AJET_DAT_INTERCHANGE_PORT")
     if not port:
         return None
-    master_node_ip = os.getenv("MASTER_NODE_IP", "localhost")
+    master_node_ip = get_master_node_ip()
     return f"http://{master_node_ip}:{port}"
 
 
@@ -233,34 +386,41 @@ def http_push_verbose_log(message: str, tag: str = "", config=None):
             logger.warning(f"Failed to push verbose log: {e}")
 
 
-def http_update_rollout_pool_information(config, pool_info: CurrentBatchRolloutPoolInformation):
+def http_update_rollout_pool_information_and_fetch_instruction(
+    config, pool_info: CurrentBatchRolloutPoolInformation
+) -> SwarmClientInstruction | None:
     """
-    Update the rollout pool information on the interchange server.
+    Update the rollout pool information on the interchange server, and fetch
+    the swarm server's view of currently-active clients and their
+    agree-to-sync-weight state.
 
     Args:
         config: The configuration object
         pool_info: CurrentBatchRolloutPoolInformation object with rollout statistics
+
+    Returns:
+        SwarmClientInstruction with `active_clients` (List[ActiveSwarmClient]),
+        or None if the request failed.
     """
+    url = f"{get_interchange_server_url(config)}/update_current_batch_rollout_pool_information_and_fetch_instruction"
     try:
-        resp = httpx.post(
-            f"{get_interchange_server_url(config)}/update_current_batch_rollout_pool_information",
-            json=pool_info.model_dump(),
-            timeout=5
-        )
+        resp = httpx.post(url, json=pool_info.model_dump(), timeout=5)
         resp.raise_for_status()
+        return SwarmClientInstruction.model_validate(resp.json())
     except Exception as e:
-        if DEBUG:
-            logger.warning(f"Failed to update rollout pool information: {e}")
+        logger.warning(f"Failed to update rollout pool information: {e} ({url})")
+        return None
 
-
+ipc_dir = os.getenv("AJET_IPC_DIR", "/tmp/agentjet")
+os.makedirs(ipc_dir, exist_ok=True)
 def get_zmq_socket(config, episode_uuid: str, tag: str = ""):
     interchange_method = config.ajet.interchange_server.interchange_method
     if interchange_method == 'tcp':
         ipc_path = ""
-        master_node_ip = os.getenv("MASTER_NODE_IP", "localhost")
+        master_node_ip = get_master_node_ip()
         zmq_contect_address = f"tcp://{master_node_ip}:{find_free_port()}"
     elif interchange_method == 'ipc':
-        ipc_path = f"/tmp/ajet/{episode_uuid}-{tag}.sock"
+        ipc_path = f"{ipc_dir}/{episode_uuid}-{tag}.sock"
         zmq_contect_address = f"ipc://{ipc_path}"
     else:
         raise RuntimeError(f"Unknown interchange_method: {interchange_method}")

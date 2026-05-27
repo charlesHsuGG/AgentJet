@@ -20,7 +20,6 @@ NON_TRAIN_AUTHORS = [
     "memory",
     "llm(do_not_train)",
 ]
-DUMMY_MSG = [{"role": "user", "content": "dummy text"}]
 
 
 def find_sublist_indices(large_list, small_list, reverse=False):
@@ -77,6 +76,7 @@ class ExtendedMessage:
         token_logprob_arr=[],
         name="",    # preserved field, not used currently
         first_message=False,
+        before_last_query=True,   # whether this message is before the last user query in the conversation, used for auto tokenization logic
     ):
         self.author = author
         self.role = role
@@ -86,7 +86,6 @@ class ExtendedMessage:
         self.token_begin_index = token_begin_index
         self.token_end_index = token_end_index
         self.invalid_log_prob_value = INVALID_LOG_PROB_VALUE
-        self._content_for_compare = ""
         self._info = ""
         self.tools = tools or []
         self.tool_calls = tool_calls
@@ -101,11 +100,14 @@ class ExtendedMessage:
         self.manual_loss_mask_override = []
         self.lack_normal_eos = False
 
-        self.generate_content_for_compare(content=self.content)
+        # text content to compare when timeline merging
+        self._text_content_for_compare = ""
+        self.generate_content_for_compare(content = self.content)
 
         self.eos_token_id = tokenizer.eos_token_id
 
         if token_generator == "auto":
+            self.before_last_query = before_last_query
             self.token_arr = self.auto_tokenize(
                 tokenizer=tokenizer,
                 tools=tools,
@@ -123,7 +125,7 @@ class ExtendedMessage:
         else:
             auto_tokenize_target: dict = {
                 "role": self.role,
-                "content": self.content_for_compare,
+                "content": self.text_content_for_compare,
             }
             if self.tool_calls:
                 auto_tokenize_target.update({"tool_calls": self.tool_calls})
@@ -136,11 +138,17 @@ class ExtendedMessage:
         return self.token_arr
 
     def auto_tokenize_non_first_message(self, tokenizer, tools):
+        if self.before_last_query:
+            # for example, this will remove the <thinking> block for qwen3's chat template
+            dummy_msg = [{"role": "assistant", "content": "dummy text"}]
+        else:
+            dummy_msg = [{"role": "user", "content": "dummy text"}]
+
         try:
             # completion_token_arr will contain generation_prompt header
             auto_tokenize_target: dict = {
                 "role": self.role,
-                "content": self.content_for_compare,
+                "content": self.text_content_for_compare,
             }
             if self.tool_calls:
                 auto_tokenize_target.update({"tool_calls": self.tool_calls})
@@ -148,17 +156,18 @@ class ExtendedMessage:
                 auto_tokenize_target.update({"tool_call_id": self.tool_call_id})
             text_frag_to = ajet_apply_chat_template(
                 tokenizer=tokenizer,
-                conversation=DUMMY_MSG + [auto_tokenize_target],
+                conversation=dummy_msg + [auto_tokenize_target],
                 tokenize=False,
                 tools=tools,
             )
         except Exception as e:
-            raise ValueError(f"Cannot tokenize {self.role} --- {self.content_for_compare}, \n\n Error: {e}") from e
-
+            raise ValueError(
+                f"Cannot tokenize {self.role} --- {self.text_content_for_compare}, \n\n Error: {e}"
+            )
         self.token_arr, _ = self.get_inc_simple(
             text_frag_from=ajet_apply_chat_template(
                 tokenizer=tokenizer,
-                conversation=DUMMY_MSG,
+                conversation=dummy_msg,
                 tokenize=False,
                 tools=tools,
             ),
@@ -168,12 +177,11 @@ class ExtendedMessage:
         return self.token_arr
 
     @property
-    def content_for_compare(self):
-        if self._content_for_compare == "":
+    def text_content_for_compare(self):
+        if self._text_content_for_compare == "":
             if not self.tool_calls:
-                logger.exception("content_for_compare is not set, or previous llm output is empty!")
-                # self._content_for_compare
-        return self._content_for_compare
+                logger.exception("text_content_for_compare is not set, or previous llm output is empty!")
+        return self._text_content_for_compare
 
     @property
     def need_training(self):
@@ -185,7 +193,7 @@ class ExtendedMessage:
         return self.author in NEED_TRAIN_AUTHORS
 
     def generate_content_for_compare(self, content):
-        self._content_for_compare = content
+        self._text_content_for_compare = content
 
     def get_loss_mask(self, blackout_token_combo):
         if self.need_training:
@@ -313,21 +321,23 @@ class ExtendedMessage:
                 token_logprob_arr=msg0.token_logprob_arr,
                 first_message=msg0.first_message,
             )
+            # a dummy msg, not necessary, can be []
+            dummy_msg = [{"role": "user", "content": "dummy text"}]
             # re-compute token_arr
             auto_tokenize_targets = [
-                {"role": msg.role, "content": msg.content_for_compare} for msg in group
+                {"role": msg.role, "content": msg.text_content_for_compare} for msg in group
             ]
             merged.token_arr, _ = merged.get_inc_simple(
                 text_frag_from=ajet_apply_chat_template(
                     tokenizer=tokenizer,
-                    conversation=DUMMY_MSG,
+                    conversation=dummy_msg,
                     tokenize=False,
                     tools=merged.tools,
                     add_generation_prompt=False,
                 ),
                 text_frag_to=ajet_apply_chat_template(
                     tokenizer,
-                    conversation=DUMMY_MSG + auto_tokenize_targets,
+                    conversation=dummy_msg + auto_tokenize_targets,
                     tokenize=False,
                     tools=merged.tools,
                     add_generation_prompt=False,

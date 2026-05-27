@@ -18,6 +18,7 @@ from ajet.schema.convertion import (
     convert_llm_proxy_response_to_agentscope_response,
     convert_llm_proxy_response_to_oai_response)
 from ajet.schema.logprob import TokenAndProb
+from ajet.utils.tokenizer import ajet_apply_chat_template
 
 if TYPE_CHECKING:
     try:
@@ -78,6 +79,18 @@ class AsyncLlmBridge(object):
             if custom_sampling_params:
                 updated_sampling_params.update(custom_sampling_params)
 
+            input_messages = copy.deepcopy(messages)
+            # the input (prompt) sequence as text
+            prompt_text = ajet_apply_chat_template(
+                tokenizer=self.tokenizer,
+                conversation=input_messages,
+                tools=tools,
+                add_generation_prompt=True,
+                tokenize=False,
+            )
+            # the input (prompt) sequence as input_ids
+            prompt_token_ids = self.tokenizer(prompt_text)["input_ids"]
+
             if "max_completion_tokens" not in updated_sampling_params:
                 updated_sampling_params["max_completion_tokens"] = self.config.ajet.rollout.max_response_length_in_one_turn
 
@@ -122,11 +135,13 @@ class AsyncLlmBridge(object):
                 "completion_tokens": completion.usage.completion_tokens if completion.usage else None,  # type: ignore
                 "total_tokens": completion.usage.total_tokens if completion.usage else None,  # type: ignore
             }
-            # from ajet import bp; bp("DECODE")
+
             return {
                 "role": message["role"],
                 "request_id": request_id,
                 "content": message["content"],
+                "prompt_text": prompt_text,
+                "prompt_token_ids": prompt_token_ids,
                 "tool_calls": message.get("tool_calls", []),
                 "finish_reason": completion.choices[0].finish_reason,
                 "usage": usage,
@@ -282,7 +297,7 @@ class OpenaiLlmProxyWithTracker(object):
         episode_uuid: str,
     ):
         from openai.types.chat.chat_completion import ChatCompletion
-        req_as_dict = req.model_dump()
+        req_as_dict = req.model_dump(mode='json')
 
         # infer + process with context tracker
         llm_output = await self.run_infer(

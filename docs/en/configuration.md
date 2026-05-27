@@ -294,6 +294,7 @@ Controls how the agent interacts during rollout (inference).
     - `"nonsense"` — Detects degenerate text patterns: leaked special tokens (`<|im_start|>`), repeated word sequences (5-word window with patience=10), character-level repetition (4-char window with patience=200).
     - `"wrong_toolcall"` — Validates tool call JSON structure: checks for valid `function` and `arguments` fields, verifies arguments parse as a JSON dict, detects `<tool_call>` tags in content without successfully parsed tool calls.
     - `"non_ascii"` — Flags non-ASCII characters in output. When combined with `"nonsense"`, non-ASCII detection is included in the nonsense check. When only `"nonsense"` is specified (default), non-ASCII detection is skipped.
+    - `"un-paired-think"` — Flags outputs where the number of exact `<think>` and `</think>` tags is not equal, including responses that contain `<think>` without a matching `</think>`.
 
 
 ## `ajet.rollout.multi_turn`
@@ -599,7 +600,7 @@ Controls the Context Tracker, which intercepts LLM calls, builds aligned timelin
 - **Type:** str.
 - **Default:** `"text"`.
 - **Description:** Controls how timelines are compared when deciding whether to merge shared conversation prefixes:
-    - `"text"` (relaxed) — Compares `content_for_compare` strings between timeline messages. More aggressive merging at very little cost, resulting in higher training speedup.
+    - `"text"` (relaxed) — Compares `text_content_for_compare` strings between timeline messages. More aggressive merging at very little cost, resulting in higher training speedup.
     - `"token"` (strict) — Compares exact `token_arr` sequences between timeline messages. Less aggressive merging since tokenization differences (e.g. whitespace handling) prevent matches. Use when tokenization fidelity is critical.
 
 ### `ajet.context_tracker.timeline_merging_policy.ignore_tools`
@@ -994,7 +995,7 @@ Swarm mode decouples rollout workers from the training loop. Workers can run on 
 - **Type:** str.
 - **Default:** `"ipc"`.
 - **Description:** Communication protocol for ZMQ messaging between episodes and trainers:
-    - `"ipc"` — Unix domain sockets at `/tmp/ajet/{episode_uuid}-{tag}.sock`. Fastest option, single-node only. Raises a `ValueError` if used with `nnodes > 1`.
+    - `"ipc"` — Unix domain sockets at `/tmp/agentjet/{episode_uuid}-{tag}.sock` (override with `AJET_IPC_DIR`). Fastest option, single-node only. Raises a `ValueError` if used with `nnodes > 1`.
     - `"tcp"` — TCP sockets on dynamically allocated ports. Required for multi-node setups. Uses `MASTER_NODE_IP` environment variable (defaults to `"localhost"` for single-node).
 
 ### `ajet.interchange_server.interchange_server_port`

@@ -3,25 +3,30 @@ import multiprocessing
 import os
 import threading
 import time
+import zipfile
 from functools import lru_cache
 from multiprocessing.managers import DictProxy
 from types import SimpleNamespace
 from typing import Coroutine, List, Optional, Tuple
 
 import zmq
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from loguru import logger
 
 from ajet.tuner_lib.experimental.interchange_utils import (
-    DEBUG, VALID_STATUSES, VERBOSE, BoolResponse, CanContinueEpisodeRequest,
-    CanContinueEpisodeResponse, CheckWhetherEpisodeClaimedRequest,
-    ClaimEpisodeRequest, ClaimEpisodeResponse, EndEpisodeRequest,
-    EndEpisodeResponse, EpisodeBufferResponse, EpisodeStatus,
-    PushVerboseLogRequest, RegisterEpisodeRequest, SyncTrainConfigRequest,
-    UpdateEngineStatusRequest, VerboseLogEntry, VerboseLogsResponse)
+    DEBUG, VALID_STATUSES, VERBOSE, ActiveSwarmClient, AgreeSyncWeightRequest,
+    BoolResponse, CanContinueEpisodeRequest, CanContinueEpisodeResponse,
+    CheckWhetherEpisodeClaimedRequest, ClaimEpisodeRequest,
+    ClaimEpisodeResponse, EndEpisodeRequest, EndEpisodeResponse,
+    EpisodeBufferResponse, EpisodeStatus, PushVerboseLogRequest,
+    RegisterEpisodeRequest, SwarmClientInstruction, SyncTrainConfigRequest,
+    UpdateEngineStatusRequest, VerboseLogEntry, VerboseLogsResponse,
+    _expire_inactive_clients, _refresh_client_activity,
+    _register_active_client, _reset_active_client_tracking)
 from ajet.tuner_lib.experimental.swarm_overwatch_utils import \
     CurrentBatchRolloutPoolInformation
 from ajet.utils.process_killer import kill_process_tree
+from ajet.utils.sync_train_code import extract_ajet_zip
 
 VERBOSE_LOG_TTL_SECONDS = 30.0
 VERBOSE_LOG_MAX_ENTRIES = 50
@@ -61,6 +66,11 @@ def register_enable_swarm_mode_routes(
 
     if "current_batch_rollout_pool_information" not in shared_mem_dict:
         shared_mem_dict["current_batch_rollout_pool_information"] = CurrentBatchRolloutPoolInformation()
+
+    # active swarm client tracking (List[ActiveSwarmClient]; helpers live in
+    # interchange_utils)
+    if "active_swarm_clients" not in shared_mem_dict:
+        shared_mem_dict["active_swarm_clients"] = []
 
     # ------------------------------------------------------------------------------------------------
     # ------ Recycle claimed episodes that client failed to complete in (promised) time --------------
@@ -220,6 +230,7 @@ def register_enable_swarm_mode_routes(
         while True:
             await asyncio.sleep(10)  # check every 10 seconds
             await find_claimed_episodes_that_need_to_be_unclaimed()
+            _expire_inactive_clients(shared_mem_dict)
             # read_all_episode_status()
             if DEBUG:
                 _write_swarm_server_dynamic_log(shared_mem_dict)
@@ -274,6 +285,10 @@ def register_enable_swarm_mode_routes(
                 shared_mem_dict["unclaimed_episodes"] = []
                 logger.info(f"[_clean_up_engine_status] Cleared {num_unclaimed} unclaimed episodes")
 
+            # reset active-client tracking (cleared each time we leave ROLLING/
+            # ROLLING_POST -- i.e. on entering WEIGHT_SYNCING etc.)
+            _reset_active_client_tracking(shared_mem_dict)
+
     # --------------------------------------------------------------------------------------
     # -------------------------- fastapi routes --------------------------------------------
     # --------------------------------------------------------------------------------------
@@ -318,6 +333,43 @@ def register_enable_swarm_mode_routes(
             logger.error(f"[sync_train_config] Error: {e}")
             return {"success": False, "error": str(e)}
 
+    @app.post("/sync_train_code")
+    async def sync_train_code(req: Request):
+        """Receive an ajet/ source zip and store the extracted path for start_engine."""
+        if VERBOSE:
+            logger.info("Running: /sync_train_code")
+
+        if shared_mem_dict["engine_status"] != "ENGINE.OFFLINE":
+            raise HTTPException(
+                status_code=400,
+                detail="Engine is already started. Call `stop_engine` first before syncing new training code.",
+            )
+
+        try:
+            zip_bytes = await req.body()
+            if not zip_bytes:
+                raise ValueError("Uploaded zip file is empty.")
+
+            temp_ajet_code_path = extract_ajet_zip(zip_bytes)
+            with shared_mem_dict_lock:
+                shared_mem_dict["temp_ajet_code_path"] = temp_ajet_code_path
+
+            logger.info(f"[sync_train_code] Stored training code at {temp_ajet_code_path}")
+            return {
+                "success": True,
+                "message": "Training code synced successfully.",
+                "temp_ajet_code_path": temp_ajet_code_path,
+            }
+        except zipfile.BadZipFile as e:
+            logger.error(f"[sync_train_code] Bad zip file: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded file is not a valid zip file.",
+            ) from e
+        except Exception as e:
+            logger.error(f"[sync_train_code] Error: {e}")
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
     @app.post("/start_engine")
     async def start_engine():
         """
@@ -329,13 +381,21 @@ def register_enable_swarm_mode_routes(
         try:
             import tempfile
 
-            import ray
             import yaml as yaml_module
 
             from ajet.launcher import (get_backbone_target,
                                        setup_environment_vars)
             from ajet.utils.config_utils import prepare_experiment_config
             from ajet.utils.launch_utils import execute_training_process
+
+            if shared_mem_dict["engine_status"] != "ENGINE.OFFLINE":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Cannot start engine when engine is not offline. "
+                        f"Current status: {shared_mem_dict['engine_status']}"
+                    ),
+                )
 
             # Check if config has been synced
             if "train_config_yaml" not in shared_mem_dict:
@@ -350,10 +410,14 @@ def register_enable_swarm_mode_routes(
             backbone = config_dict.get("ajet", {}).get("backbone", "verl")
             DEFAULT_DIR = "saved_experiments"
             experiment_dir = config_dict.get("ajet", {}).get("experiment_dir", DEFAULT_DIR)
+            experiment_name = config_dict.get("ajet", {}).get("experiment_name", '')
             if experiment_dir == "auto":
                 exp_base_dir = DEFAULT_DIR
+            elif experiment_name and experiment_dir and (experiment_name not in experiment_dir):
+                exp_base_dir = os.path.dirname(os.path.join(os.path.abspath(experiment_dir), experiment_name))
             else:
                 exp_base_dir = os.path.dirname(os.path.abspath(experiment_dir))
+            logger.info(f"[start_engine] experiment_dir: {experiment_dir}, exp_base_dir: {exp_base_dir}")
 
             # Save YAML to temporary file
             with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".yaml") as temp_file:
@@ -390,6 +454,21 @@ def register_enable_swarm_mode_routes(
 
             # Setup environment variables
             env, exp_config = setup_environment_vars(args, exp_config, main_yaml_fp)
+            temp_ajet_code_path = shared_mem_dict.get("temp_ajet_code_path", None)
+            if temp_ajet_code_path and os.path.isdir(temp_ajet_code_path):
+                isolated_agentjet_base_dir = os.path.dirname(
+                    os.path.abspath(temp_ajet_code_path.rstrip(os.sep))
+                )
+                env["ISOLATED_AGENTJET_BASE_DIR"] = isolated_agentjet_base_dir
+                shared_mem_dict["active_ajet_code_path"] = temp_ajet_code_path
+                logger.info(
+                    f"[start_engine] Using synced training code from {temp_ajet_code_path}"
+                )
+            elif temp_ajet_code_path:
+                logger.warning(
+                    "[start_engine] Synced training code path no longer exists: "
+                    f"{temp_ajet_code_path}. Using current code."
+                )
 
             # Start ray if not already started
             # if not ray.is_initialized():
@@ -440,6 +519,8 @@ def register_enable_swarm_mode_routes(
             logger.info(f"[start_engine] Successfully started training process (PID: {p.pid})")
             return {"success": True, "pid": p.pid}
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"[start_engine] Error starting engine: {e}")
             import traceback
@@ -600,6 +681,11 @@ def register_enable_swarm_mode_routes(
             if VERBOSE:
                 logger.info(f"Running [{episode_uuid}]: /claim_episode")
 
+            # begin_episode counts as activity for keeping a client in the
+            # active list (only refreshes if already active; first activation
+            # comes from a successful end_episode).
+            _refresh_client_activity(req.client_uuid, shared_mem_dict)
+
             return ClaimEpisodeResponse(
                 success=True,
                 client_uuid=req.client_uuid,
@@ -665,6 +751,9 @@ def register_enable_swarm_mode_routes(
                 shared_mem_dict,
                 shared_mem_dict_lock,
             )
+            # successful, non-abort end_episode marks the client "active"
+            if req.declare_client_active:
+                _register_active_client(client_uuid, shared_mem_dict)
 
         elif episode_type == "eval":
             if engine_status in ["ENGINE.ROLLING"]:
@@ -704,6 +793,9 @@ def register_enable_swarm_mode_routes(
         else:
             _delete_episode_record(episode_uuid, shared_mem_dict, shared_mem_dict_lock)
 
+        if req.declare_client_active:
+            _register_active_client(req.client_uuid, shared_mem_dict)
+
         return EndEpisodeResponse(success=True)
 
     @app.post("/can_continue_episode", response_model=CanContinueEpisodeResponse)
@@ -739,11 +831,23 @@ def register_enable_swarm_mode_routes(
         result = [v for k, v in shared_mem_dict.items() if is_key_episode_status(k)]
         return EpisodeBufferResponse(buffer=result)
 
-    @app.post("/update_current_batch_rollout_pool_information", response_model=BoolResponse)
-    async def update_current_batch_rollout_pool_information(req: CurrentBatchRolloutPoolInformation):
-        """Update the current batch rollout pool information."""
+    @app.post(
+        "/update_current_batch_rollout_pool_information_and_fetch_instruction",
+        response_model=SwarmClientInstruction,
+    )
+    async def update_current_batch_rollout_pool_information_and_fetch_instruction(
+        req: CurrentBatchRolloutPoolInformation,
+    ):
+        """Update pool information and return the active-client instruction.
+
+        The trainer pushes its latest pool snapshot here every few seconds;
+        in the same call we hand back the server-maintained
+        `active_swarm_clients` list so the trainer can evaluate
+        `rollout_until_*_agree_sync_weight` stop conditions without an extra
+        round-trip.
+        """
         if DEBUG:
-            logger.info("Running /update_current_batch_rollout_pool_information")
+            logger.info("Running /update_current_batch_rollout_pool_information_and_fetch_instruction")
         try:
             with shared_mem_dict_lock:
                 # Ignore fields that are only maintained in shared_mem_dict
@@ -752,10 +856,62 @@ def register_enable_swarm_mode_routes(
                 req.global_step = None
                 req.completed_tasks_client_uuids = {}
                 shared_mem_dict["current_batch_rollout_pool_information"] = req
-            return BoolResponse(success=True)
+                instruction = SwarmClientInstruction(
+                    active_clients=list(shared_mem_dict.get("active_swarm_clients", []))
+                )
+            return instruction
         except Exception as e:
             logger.error(f"Error updating current batch rollout pool information: {e}")
-            return BoolResponse(success=False, failure_reason=str(e))
+            return SwarmClientInstruction()
+
+    AGREE_SYNC_WEIGHT_VALID_METHODS = (
+        "rollout_until_any_client_agree_sync_weight",
+        "rollout_until_all_clients_agree_sync_weight",
+    )
+
+    @app.post("/agree_sync_weight", response_model=BoolResponse)
+    async def agree_sync_weight(req: AgreeSyncWeightRequest):
+        """Mark a client as having agreed to the next weight sync.
+
+        Only counts when the client is currently in the active list (otherwise
+        the agreement would be silently expired anyway). The set is cleared
+        whenever the engine leaves ROLLING/ROLLING_POST.
+
+        Refuses the call unless the trainer is configured with one of the
+        agree-driven sample-collection methods, since under any other policy
+        the agreement would have no effect on when the trainer stops.
+        """
+        if VERBOSE:
+            logger.info(f"Running /agree_sync_weight: {req.client_uuid}")
+        client_uuid = req.client_uuid
+        if not client_uuid:
+            return BoolResponse(success=False, failure_reason="client_uuid required")
+        pool_info: CurrentBatchRolloutPoolInformation = shared_mem_dict.get(
+            "current_batch_rollout_pool_information",
+            CurrentBatchRolloutPoolInformation(),
+        )
+        assert pool_info.sample_collection_method in AGREE_SYNC_WEIGHT_VALID_METHODS, (
+            f"agree_sync_weight is only valid when "
+            f"ajet.swarm_mode_sample_collection_method is one of "
+            f"{AGREE_SYNC_WEIGHT_VALID_METHODS}, but the trainer is currently "
+            f"running with '{pool_info.sample_collection_method}'."
+        )
+        with shared_mem_dict_lock:
+            clients: List[ActiveSwarmClient] = list(
+                shared_mem_dict.get("active_swarm_clients", [])
+            )
+            for i, c in enumerate(clients):
+                if c.client_uuid == client_uuid:
+                    if not c.allowed_sync_weight:
+                        clients[i] = c.model_copy(update={"allowed_sync_weight": True})
+                        shared_mem_dict["active_swarm_clients"] = clients
+                    return BoolResponse(success=True)
+        return BoolResponse(
+            success=False,
+            failure_reason=(
+                f"Client {client_uuid} is not in the active list -- it must have completed at least one rewarded (non-abort) episode since the last weight sync before agreeing."
+            ),
+        )
 
     @app.get("/get_current_batch_rollout_pool_information", response_model=CurrentBatchRolloutPoolInformation)
     async def get_current_batch_rollout_pool_information():
@@ -770,6 +926,9 @@ def register_enable_swarm_mode_routes(
             pool_info.global_step = shared_mem_dict.get("global_step", None)
             pool_info.booting_start_time = shared_mem_dict.get("booting_start_time", None)
             pool_info.training_model_path = shared_mem_dict.get("training_model_path", None)
+            pool_info.swarm_client_instruction = SwarmClientInstruction(
+                active_clients=list(shared_mem_dict.get("active_swarm_clients", []))
+            ).model_dump()
 
             # Build running_episode_details for claimed episodes
             running_episode_details = {}

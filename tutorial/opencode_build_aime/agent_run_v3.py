@@ -21,6 +21,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from textwrap import dedent
+from typing import Protocol
 from uuid import uuid4
 
 from openai import OpenAI
@@ -28,9 +29,15 @@ from openai import OpenAI
 from ajet.copilot.job import AgentJetJob
 from ajet.schema.task import Task, WorkflowOutput
 from ajet.tuner_lib.as_oai_baseurl_apikey import OpenaiBaseUrlAndApiKey
+from ajet.utils.message_utils import is_token_overflow_message
 
 
 TIMEOUT_EXIT_CODE = -101
+
+
+class AimeAgentConfigLike(Protocol):
+    model: str
+    max_response_length: int
 
 
 # ==================== Python Code Execution Tool ====================
@@ -359,6 +366,11 @@ class AgentLoop:
 
             total_tokens_used += response.usage.total_tokens if response.usage else 0
 
+            # AgentJet signals prompt overflow via a synthetic assistant message; further turns would only grow the prompt, so stop now.
+            if is_token_overflow_message(response_content):
+                formatted_messages.append({"role": "assistant", "content": response_content})
+                break
+
             if response_message.tool_calls:
                 for tool_call in response_message.tool_calls:
                     history_tool_calls.append({
@@ -451,7 +463,7 @@ def compute_reward(solution_str: str, ground_truth: str) -> dict:
 def execute_agent(
     task: Task,
     api_baseurl_key: OpenaiBaseUrlAndApiKey,
-    ajet_job: AgentJetJob,
+    ajet_job: AimeAgentConfigLike,
 ) -> WorkflowOutput:
     base_url = api_baseurl_key.base_url
     api_key = api_baseurl_key.api_key

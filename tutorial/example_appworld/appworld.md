@@ -1,8 +1,19 @@
 ## Run Appworld AgentScope Agent
 
-### 1. Prepare dataset
+### 1. Install and Run Appworld
 
-Please download `env_service` and `appworld`. For specific steps, please refer to [EnvService Documentation](https://code.alibaba-inc.com/EconML/EnvService)
+- Install:
+```
+rm -rf /tmp/pack_all_in_one & wget https://dail-wlcb.oss-cn-wulanchabu.aliyuncs.com/astuner_archive/appworld_pack_v3.tar.gz  &&   tar   -xzf   ./appworld_pack_v3.tar.gz  -C /tmp
+```
+
+- Run:
+```
+export APPWORLD_PATH="/tmp/pack_all_in_one"
+export APPWORLD_SCRIPT="bash EnvService/env_sandbox/appworld.sh"
+ajet --with-appworld --skip-check-avail-gpu
+```
+
 
 
 ### 2. Prepare AgentScope Workflow

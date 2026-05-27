@@ -185,3 +185,15 @@ research_*.json
 research_*.jsonc
 daemon_logs*
 paper
+val_results.md
+cocktail_vs_separate*
+cocktail_results_*
+PRINCIPLE.md
+TODO.md
+plot_mean_reward.py
+appworld_swarm_results_token
+appworld_swarm_results_text
+appworld_swarm_results
+TODO
+.trash.*
+tutorial/opencode_build_aime/auto_research/results/*

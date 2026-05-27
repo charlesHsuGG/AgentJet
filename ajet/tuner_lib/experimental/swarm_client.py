@@ -1,26 +1,30 @@
 import json
+import os
 import re
+import socket
 import tempfile
 import threading
 import time
 import uuid
 from typing import List, Tuple
+from urllib.parse import urlparse
 
 import httpx
 import yaml
-from beast_logger import print_dict
+from beast_logger import print_dict, register_console
 from loguru import logger
 
 from ajet.copilot.job import AgentJetJob
 from ajet.schema.task import Task, WorkflowOutput
 from ajet.tuner_lib.as_oai_baseurl_apikey import OpenaiBaseUrlAndApiKey
 from ajet.tuner_lib.experimental.interchange_utils import (
-    CanContinueEpisodeRequest, CanContinueEpisodeResponse, ClaimEpisodeRequest,
-    ClaimEpisodeResponse, EndEpisodeRequest, EndEpisodeResponse,
-    EpisodeBufferResponse, EpisodeStatus, SwarmThrottlePolicy,
-    SyncTrainConfigRequest)
+    AgreeSyncWeightRequest, BoolResponse, CanContinueEpisodeRequest,
+    CanContinueEpisodeResponse, ClaimEpisodeRequest, ClaimEpisodeResponse,
+    EndEpisodeRequest, EndEpisodeResponse, EpisodeBufferResponse,
+    EpisodeStatus, SwarmThrottlePolicy, SyncTrainConfigRequest)
 from ajet.tuner_lib.experimental.swarm_overwatch_utils import \
     CurrentBatchRolloutPoolInformation
+from ajet.utils.sync_train_code import create_tracked_ajet_zip_from_dir
 
 # general http timeout
 GENERAL_TIMEOUT = 30
@@ -29,9 +33,67 @@ CLEAN_RECORD_TIMEOUT = 10
 START_EPISODE_RETRY_DELAY = 15
 TROTTLE_EPISODE_RETRY_DELAY = 2
 WAIT_MORE_AVAIL_EPISODE_RETRY_DELAY = 2
+# agree_sync_weight retry policy. The call must succeed -- a dropped
+# agreement can stall the trainer's stop condition. Retries cover both
+# transport errors and server-side rejection (e.g. when a just-completed
+# end_episode hasn't yet propagated to the server's active list).
+AGREE_SYNC_WEIGHT_RETRY_DELAY = 2.0
+DELAY_AFTER_AGREE_SYNC_WEIGHT = 30
+ENGINE_STATUS_POLL_INTERVAL = 5
+
+
+def _extract_local_swarm_port(server_url: str) -> int:
+    """When translating client sdk into other programming languages such as typescript, ignore this function.
+    """
+    parsed = urlparse(server_url if "://" in server_url else f"http://{server_url}")
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise ValueError(
+            f"auto_start_swarm_server only supports local server_url, got {server_url!r}"
+        )
+    if parsed.port is None:
+        raise ValueError(f"server_url must include an explicit port, got {server_url!r}")
+    return parsed.port
+
+
+def _auto_start_local_swarm_server(server_url: str):
+    """When translating client sdk into other programming languages such as typescript, ignore this function.
+    """
+    from ajet.utils.smart_daemon import LaunchCommandWhenAbsent
+
+    swarm_port = _extract_local_swarm_port(server_url)
+    parsed = urlparse(server_url if "://" in server_url else f"http://{server_url}")
+    try:
+        with socket.create_connection((parsed.hostname, swarm_port), timeout=1):
+            logger.warning("Swarm server is already running at %s. No need to auto-start.", server_url)
+    except ConnectionRefusedError:
+        pass
+
+    companion = LaunchCommandWhenAbsent(
+        full_argument_list=[
+            "ajet-swarm",
+            "start",
+            f"--swarm-port={swarm_port}",
+        ],
+        dir="./",
+        tag=f"swarm_server_{swarm_port}",
+    )
+    companion.launch(
+        launch_wait_time=60,
+        success_std_string="Interchange server is running in blocking mode",
+        env_dict=os.environ.copy(),
+    )
 
 
 def raise_for_status_with_detail(resp):
+    """
+    Raise an exception with detailed error information if the response indicates an error.
+
+    Args:
+        resp: The httpx response object to check.
+
+    Raises:
+        RuntimeError: If the response status code indicates an error.
+    """
     try:
         resp.raise_for_status()
     except httpx.HTTPStatusError as e:
@@ -62,12 +124,24 @@ class SwarmClientBase(object):
         "broken pipe", "disconnected", "connection reset",
         "connection closed", "connection aborted", "bad file descriptor",
     )
+    # Force-refresh the http client after this many consecutive poll failures,
+    # even if none of the error messages match REFRESH_TRIGGER_KEYWORDS. Covers
+    # cases where httpx wedges in ways our keyword heuristic can't detect
+    # (HTTP/2 protocol stalls, sticky timeouts, stale pools).
+    POLL_FORCE_REFRESH_AFTER = 3
 
     def __init__(self, server_url: str, verbose: bool = True):
+        """
+        Initialize the SwarmClientBase.
+
+        Args:
+            server_url: The URL of the swarm server.
+            verbose: If True, enable verbose logging output.
+        """
+        register_console()
         self.server_url = server_url
         self.verbose = verbose
         self.client_uuid = str(uuid.uuid4())
-
         # http client
         self._last_second_print_buffer: dict[str, float] = {}
         self._http_client_lock = threading.Lock()
@@ -78,6 +152,10 @@ class SwarmClientBase(object):
         self._engine_status_ready = threading.Event()
         self._engine_status_last_error_log_time = 0.0
         self._engine_status_poll_interval = self.SLOW_POLL
+        # consecutive failures since the last successful poll. Used to force an
+        # http client refresh when the keyword-based heuristic in
+        # `_should_refresh_client_on_error` misses a wedged connection.
+        self._engine_status_consecutive_failures = 0
 
         # fast-poll window: True for FAST_POLL_WINDOW seconds after each get_engine_status() call
         self._high_freq_update_status = False
@@ -114,20 +192,36 @@ class SwarmClientBase(object):
     # ---- http client --------------------------------------------------
 
     def _refresh_http_client(self):
-        """Close the existing http client and create a fresh one."""
+        """Close the existing http client and create a fresh one.
+
+        HTTP/1.1 only on purpose: swarm endpoints are small, low-frequency
+        polls/heartbeats, so multiplexing buys nothing — and HTTP/2 has a class
+        of stall failures (flow-control deadlock, GOAWAY mishandling, ping
+        timeouts, HPACK desync, server-restart-behind-LB) where the TCP
+        connection stays "alive" but every stream hangs without ever raising
+        connection-reset/broken-pipe. That makes the keyword-based refresh
+        heuristic miss them. Plain HTTP/1.1 fails loudly on the same
+        scenarios, which our refresh logic can detect.
+        """
         with self._http_client_lock:
             try:
                 self._http_client.close()
             except Exception:
                 pass
-            try:
-                self._http_client = httpx.Client(timeout=GENERAL_TIMEOUT, http2=True)
-            except Exception:
-                self._http_client = httpx.Client(timeout=GENERAL_TIMEOUT, http2=False)
+            self._http_client = httpx.Client(timeout=GENERAL_TIMEOUT, http2=False)
             logger.warning("swarm client httpx client refreshed.")
             return self._http_client
 
     def _should_refresh_client_on_error(self, error: Exception) -> bool:
+        """
+        Check if the HTTP client should be refreshed based on the error message.
+
+        Args:
+            error: The exception that occurred during an HTTP request.
+
+        Returns:
+            True if the error message contains keywords indicating a connection issue.
+        """
         msg = str(error).lower()
         return any(k in msg for k in self.REFRESH_TRIGGER_KEYWORDS)
 
@@ -139,6 +233,12 @@ class SwarmClientBase(object):
             self._entering_weight_sync_callbacks.append(callback)
 
     def _observe_engine_status(self, new_status: str):
+        """
+        Observe engine status changes and fire callbacks on transitions.
+
+        Args:
+            new_status: The new engine status string.
+        """
         with self._engine_status_callback_lock:
             fresh_entry = (
                 new_status == "ENGINE.WEIGHT_SYNCING"
@@ -170,15 +270,27 @@ class SwarmClientBase(object):
         return status_json.get("global_step", 0)
 
     def _engine_status_poll_loop(self):
-        """Background thread: fetch engine status at _engine_status_poll_interval."""
+        """Background thread: fetch engine status at _engine_status_poll_interval.
+
+        Top-level try/except is a final safety net: if it dies the cache freezes
+        forever and only a process restart recovers — exactly the failure mode
+        this whole module is trying to prevent.
+        """
         while not self._engine_status_poll_stop.is_set():
-            if self._high_freq_update_status and time.time() >= self._high_freq_update_expiry:
-                self._high_freq_update_status = False
-                self._engine_status_poll_interval = self.SLOW_POLL
-            self._poll_engine_status_once()
+            try:
+                if self._high_freq_update_status and time.time() >= self._high_freq_update_expiry:
+                    self._high_freq_update_status = False
+                    self._engine_status_poll_interval = self.SLOW_POLL
+                self._poll_engine_status_once()
+            except Exception as e:
+                now = time.time()
+                if now - self._engine_status_last_error_log_time > 30:
+                    logger.exception(f"Unexpected error in engine_status poll loop (continuing): {e}")
+                    self._engine_status_last_error_log_time = now
             self._engine_status_poll_stop.wait(self._engine_status_poll_interval)
 
     def _poll_engine_status_once(self):
+        """Fetch engine status from the server once and update the cache."""
         try:
             resp = self._http_client.get(f"{self.server_url}/get_engine_status", timeout=10)
             raise_for_status_with_detail(resp)
@@ -188,75 +300,114 @@ class SwarmClientBase(object):
                 logger.warning(f"get_engine_status: {resp_json}")
             self._engine_status_cache = (status, resp_json)
             self._engine_status_ready.set()
+            self._engine_status_consecutive_failures = 0
             self._observe_engine_status(status)
         except Exception as e:
-            if self._should_refresh_client_on_error(e):
-                self._refresh_http_client()
+            self._engine_status_consecutive_failures += 1
+            # Refresh on either: (a) a known-transient error pattern, or
+            # (b) sustained failure even if the error doesn't match — httpx can
+            # wedge in ways the keyword heuristic doesn't catch, and without
+            # this the same broken connection keeps failing forever and the
+            # cached status stays stale until the process is restarted.
+            try:
+                if (
+                    self._should_refresh_client_on_error(e)
+                    or self._engine_status_consecutive_failures >= self.POLL_FORCE_REFRESH_AFTER
+                ):
+                    self._refresh_http_client()
+                    self._engine_status_consecutive_failures = 0
+            except Exception as refresh_err:
+                logger.error(f"engine_status poll: http client refresh failed: {refresh_err}")
             if self._engine_status_cache is None:
                 # unblock waiters on the very first call when the server is unreachable
                 self._engine_status_cache = ("ENGINE.CANNOT_CONNECT", {})
                 self._engine_status_ready.set()
             now = time.time()
             if now - self._engine_status_last_error_log_time > 30:
-                logger.error(f"Error getting engine status in poll loop: {e}")
+                logger.error(
+                    f"Error getting engine status in poll loop "
+                    f"(consecutive failures: {self._engine_status_consecutive_failures}): {e}"
+                )
                 self._engine_status_last_error_log_time = now
 
-    def _wait_until_status_change_to(self, desired_status="ENGINE.ROLLING", verbose=True, timeout=3600):
-        """Block until engine status reaches desired_status, reporting every 30s."""
+    def _wait_until_status_change_to(self, desired_status=None, desired_status_list=None, verbose=True):
+        """Block until engine status reaches desired_status or one of desired_status_list, reporting every 30s."""
+        if desired_status is not None:
+            desired_status_list = [desired_status]
+        assert desired_status_list, "Must specify desired_status or non-empty desired_status_list"
+
         if verbose:
-            self.logger_info(f"Polling engine status until {desired_status}...")
+            self.logger_info(f"Polling engine status until {desired_status_list}...")
+
         start = time.time()
         last_report = start
-        initial_status, _ = self.get_engine_status()
+        ever_see_non_offline_state = False
 
         while True:
             try:
                 current_status, _ = self.get_engine_status()
                 now = time.time()
 
-                if now - start >= timeout:
-                    raise TimeoutError(f"Timeout reached while waiting for engine status to change to {desired_status}")
+                if current_status != "ENGINE.OFFLINE":
+                    ever_see_non_offline_state = True
 
-                if initial_status == "ENGINE.OFFLINE" and current_status == "ENGINE.OFFLINE" and desired_status != "ENGINE.OFFLINE":
+                if ever_see_non_offline_state and (current_status == "ENGINE.OFFLINE") and ("ENGINE.OFFLINE" not in desired_status_list):
                     raise SwarmServerOfflineError(
-                        f"Engine status changed from {initial_status} to OFFLINE while waiting for {desired_status}. "
-                        "This may indicate an error in the engine. Please check the swarm server logs for details."
+                        f"Engine status is OFFLINE while waiting for {desired_status_list}. This may indicate an error in the engine. "
+                        "Please check the swarm server logs for details."
                     )
 
-                if current_status == desired_status:
+                if current_status in desired_status_list:
                     if verbose:
-                        self.logger_info(f"Engine status is {desired_status}.")
+                        self.logger_info(f"Engine status is {current_status}.")
                     return
 
-                if verbose and now - last_report >= 30:
+                if verbose and (now - last_report >= 30):
                     self.logger_info(f"Current engine status (already waited {int(now - start)}s): {current_status}")
                     last_report = now
 
-                time.sleep(5)
+                time.sleep(ENGINE_STATUS_POLL_INTERVAL)
             except SwarmServerOfflineError:
                 raise
             except Exception as e:
-                if self._should_refresh_client_on_error(e):
-                    self._refresh_http_client()
                 logger.error(f"Error polling engine status: {e}")
-                time.sleep(5)
+                time.sleep(ENGINE_STATUS_POLL_INTERVAL)
 
 
 class SwarmClient(SwarmClientBase):
+    """HTTP client for interacting with the Swarm server for distributed RL training."""
 
-    def __init__(self, server_url: str, verbose: bool = True):
+    def __init__(
+        self,
+        server_url: str,
+        verbose: bool = True,
+        agentjet_job=None,
+        auto_start_swarm_server: bool = False,
+    ):
+        """
+        Initialize the SwarmClient.
+
+        Args:
+            server_url: The URL of the swarm server.
+            verbose: If True, enable verbose logging output.
+            agentjet_job: The training parameters.
+            auto_start_swarm_server: If True, automatically start the swarm server.
+        """
+        if auto_start_swarm_server:
+            # When translating client sdk into other programming languages such as typescript, delete `auto_start_swarm_server` capability.
+            _auto_start_local_swarm_server(server_url)
         super().__init__(server_url=server_url, verbose=verbose)
         self.previous_warning_time = 0
         self.record_episode_expire_time = {}
         self.auto_batching_tasks = []
         self._begin_episode_lock = threading.Lock()
         # record last registered AgentJetJob
-        self._agent_jet_job = None
+        self._agentjet_job = agentjet_job
         # throttle
         self._recent_seen_tasks = []
 
     def _clean_up_expired_records(self):
-        # remove records that have expired and expired at least CLEAN_RECORD_TIMEOUT seconds ago
+        """Remove episode records that have expired beyond CLEAN_RECORD_TIMEOUT seconds."""
         current_time = time.time()
         expired_episodes = [
             episode_uuid for episode_uuid, expire_time in self.record_episode_expire_time.items()
@@ -273,10 +424,10 @@ class SwarmClient(SwarmClientBase):
         """
         assert throttle_policy is not None, "Throttle policy must be provided."
 
-        if self._agent_jet_job:
+        if self._agentjet_job:
             # check and raise early errors when possible
-            assert self._agent_jet_job.swarm_mode_sample_collection_method == "rollout_until_finish_enough_tasks", \
-                f"Current sample collection method ({self._agent_jet_job.swarm_mode_sample_collection_method}) does not support throttle policy."
+            assert self._agentjet_job.swarm_mode_sample_collection_method == "rollout_until_finish_enough_tasks", \
+                f"Current sample collection method ({self._agentjet_job.swarm_mode_sample_collection_method}) does not support throttle policy."
 
         # only_this_client_uuid = throttle_policy.throttle_method in ["Task_Ratio_Limit"]
         only_this_client_uuid = True
@@ -344,6 +495,14 @@ class SwarmClient(SwarmClientBase):
             return False, ""
 
     def _remember_seen_task(self, task_id: str, batch_size, num_repeat):
+        """
+        Record a task_id as recently seen for throttle policy tracking.
+
+        Args:
+            task_id: The task ID to remember.
+            batch_size: Expected batch size, used to calculate buffer limit.
+            num_repeat: Expected number of repeats per task, used to calculate buffer limit.
+        """
         MAX_SEEN_TASK_BUFFER_SIZE = batch_size * num_repeat * 3  # keep buffer size manageable, can be tuned
         if task_id not in self._recent_seen_tasks:
             self._recent_seen_tasks.append(task_id)
@@ -351,6 +510,16 @@ class SwarmClient(SwarmClientBase):
                 self._recent_seen_tasks = self._recent_seen_tasks[-MAX_SEEN_TASK_BUFFER_SIZE:]
 
     def _should_throttle(self, throttle_policy: SwarmThrottlePolicy, pool_info: CurrentBatchRolloutPoolInformation) -> bool:
+        """
+        Determine if the client should throttle based on the throttle policy.
+
+        Args:
+            throttle_policy: The throttle policy configuration.
+            pool_info: Current batch rollout pool information from the server.
+
+        Returns:
+            True if the client should throttle and delay starting a new episode.
+        """
         should_throttle, throttle_reason = self._check_throttle_policy(throttle_policy, pool_info)
         if not should_throttle:
             # direct start this episode
@@ -374,6 +543,20 @@ class SwarmClient(SwarmClientBase):
         return self._begin_episode_auto_retry(discard_episode_timeout, episode_type, throttle_policy)
 
     def _begin_episode_auto_retry(self, discard_episode_timeout=240, episode_type="train", throttle_policy: SwarmThrottlePolicy | None = None) -> Tuple[str, OpenaiBaseUrlAndApiKey]:
+        """
+        Internal method to claim an episode with automatic retry logic.
+
+        Args:
+            discard_episode_timeout: Idle timeout in seconds before the server discards the episode.
+            episode_type: Type of episode, either "train" or "eval".
+            throttle_policy: Optional throttle policy for task distribution control.
+
+        Returns:
+            A tuple of (episode_uuid, OpenaiBaseUrlAndApiKey).
+
+        Raises:
+            SwarmServerOfflineError: If the server goes offline during the operation.
+        """
         # max_episode_time: when an episode has **lasted** for more than X seconds, it will be terminated **locally** by client (call `end_episode` will be re-route to `abort_episode`)
         max_episode_time = 8 * discard_episode_timeout
         status, status_json = self.get_engine_status()  # warm up connection and log the status
@@ -478,8 +661,21 @@ class SwarmClient(SwarmClientBase):
                     if self._begin_episode_lock.locked():
                         self._begin_episode_lock.release()
 
-    def end_episode(self, task: Task, episode_uuid: str, workflow_output: WorkflowOutput):
+    def end_episode(self, task: Task, episode_uuid: str, workflow_output: WorkflowOutput, declare_client_active: bool = True):
+        """
+        End an episode and submit the workflow output to the server.
 
+        Args:
+            task: The task associated with this episode.
+            episode_uuid: The UUID of the episode to end.
+            workflow_output: The workflow output containing reward and metadata.
+            declare_client_active: If True, register this client as active on the server.
+                This is only useful when you select `rollout_until_all_clients_agree_sync_weight`,
+                because in this case the server has to know how many client nodes are active.
+
+        Raises:
+            RuntimeError: If the server fails to end the episode.
+        """
         if not episode_uuid:
             logger.error("No episode to end.")
             return
@@ -507,7 +703,8 @@ class SwarmClient(SwarmClientBase):
             client_uuid=self.client_uuid,
             episode_uuid=episode_uuid,
             workflow_output=workflow_output,
-            task_id=task_id
+            task_id=task_id,
+            declare_client_active=declare_client_active
         )
 
         resp = self._http_client.post(
@@ -533,7 +730,16 @@ class SwarmClient(SwarmClientBase):
             logger.error(f"Failed to end episode {episode_uuid}")
             raise RuntimeError(f"Failed to end episode {episode_uuid}")
 
-    def abort_episode(self, episode_uuid: str):
+    def abort_episode(self, episode_uuid: str, declare_client_active: bool = True):
+        """
+        Abort an episode without submitting a valid workflow output.
+
+        Args:
+            episode_uuid: The UUID of the episode to abort.
+            declare_client_active: If True, register this client as active on the server.
+                This is only useful when you select `rollout_until_all_clients_agree_sync_weight`,
+                because in this case the server has to know how many client nodes are active.
+        """
         if not episode_uuid:
             logger.error("No episode to end.")
             return
@@ -544,7 +750,8 @@ class SwarmClient(SwarmClientBase):
                 client_uuid=self.client_uuid,
                 episode_uuid=episode_uuid,
                 workflow_output=workflow_output,
-                task_id=""
+                task_id="",
+                declare_client_active=declare_client_active
             )
 
             resp = self._http_client.post(
@@ -565,19 +772,19 @@ class SwarmClient(SwarmClientBase):
                 self._refresh_http_client()
             logger.error(f"Error ending episode: {e}")
 
-    def sync_train_config(self, agent_jet_job: AgentJetJob):
+    def sync_train_config(self, agentjet_job: AgentJetJob):
         """
         Sync training configuration to the Swarm server.
         This sends the AgentJetJob config as YAML to the remote server.
         """
         # try get init status
         current_status, _ = self.get_engine_status()
-        self._agent_jet_job = agent_jet_job
+        self._agentjet_job = agentjet_job
         if current_status != "ENGINE.OFFLINE":
             raise RuntimeError(f"Cannot sync train config when engine is NOT ENGINE.OFFLINE. (current status: {current_status})")
 
         try:
-            config_dict = agent_jet_job.config.to_dict()
+            config_dict = agentjet_job.config.to_dict()
             yaml_str = yaml.safe_dump(config_dict, sort_keys=False)
             with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
                 f.write(yaml_str)
@@ -593,6 +800,64 @@ class SwarmClient(SwarmClientBase):
         except Exception as e:
             logger.error(f"Error syncing train config: {e}")
             raise
+
+    def sync_train_code(self, zip_file_path: str):
+        """
+        Sync an ajet/ source zip to the Swarm server.
+        The zip must contain a top-level ajet/ directory.
+        """
+        current_status, _ = self.get_engine_status()
+        if current_status != "ENGINE.OFFLINE":
+            raise RuntimeError(
+                "Cannot sync train code when engine is NOT ENGINE.OFFLINE. "
+                f"(current status: {current_status})"
+            )
+        if not os.path.isfile(zip_file_path):
+            raise FileNotFoundError(f"Training code zip file does not exist: {zip_file_path}")
+
+        try:
+            with open(zip_file_path, "rb") as f:
+                resp = self._http_client.post(
+                    f"{self.server_url}/sync_train_code",
+                    content=f.read(),
+                    headers={"Content-Type": "application/zip"},
+                    timeout=600,
+                )
+            raise_for_status_with_detail(resp)
+            result = resp.json()
+            if not result.get("success"):
+                raise RuntimeError(
+                    result.get("message")
+                    or result.get("error")
+                    or "Failed to sync train code"
+                )
+            self.logger_info(
+                f"Synced train code to Swarm server: {result.get('temp_ajet_code_path')}"
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error syncing train code: {e}")
+            raise
+
+    def sync_train_code_from_dir(self, directory_path: str, force_restart=False):
+        """
+        Create a tracked-only ajet/ source zip from a directory, then sync it.
+        The directory must contain an ajet/ folder and be inside a Git work tree.
+
+        Args:
+            - directory_path: Directory containing the ajet/ source tree.
+            - force_restart: If True, stops the engine before syncing train code.
+        """
+        if force_restart:
+            logger.warning("Force restarting the engine...")
+            self.stop_engine()
+
+        zip_file_path, file_count = create_tracked_ajet_zip_from_dir(directory_path)
+        logger.warning(f"Created tracked-only training code zip: {zip_file_path}")
+        result = self.sync_train_code(zip_file_path)
+        result["local_zip_file_path"] = zip_file_path
+        result["local_zip_file_count"] = file_count
+        return result
 
     def start_engine(self):
         """
@@ -624,6 +889,15 @@ class SwarmClient(SwarmClientBase):
         logger.success("Training engine is now ROLLING and ready.")
 
     def can_continue_episode(self, episode_uuid: str) -> bool:
+        """
+        Check if an episode can continue (still claimed and engine is rolling).
+
+        Args:
+            episode_uuid: The UUID of the episode to check.
+
+        Returns:
+            True if the episode can continue, False otherwise.
+        """
         if not episode_uuid:
             return False
         try:
@@ -646,6 +920,12 @@ class SwarmClient(SwarmClientBase):
             return False
 
     def get_episode_buffer(self) -> List[EpisodeStatus]:
+        """
+        Get the current episode buffer from the server.
+
+        Returns:
+            A list of EpisodeStatus objects representing all active episodes.
+        """
         try:
             resp = self._http_client.post(
                 f"{self.server_url}/get_episode_buffer",
@@ -661,13 +941,13 @@ class SwarmClient(SwarmClientBase):
             logger.error(f"Error getting episode buffer: {e}")
             return []
 
-    def auto_sync_train_config_and_start_engine(self, agent_jet_job: AgentJetJob, force_restart=False):
+    def auto_sync_train_config_and_start_engine(self, agentjet_job: AgentJetJob, force_restart=False, _retry_once=True) -> None:
         """
         Automatically sync training configuration and start the engine if needed.
         This checks the current engine status and performs actions accordingly.
 
         Args:
-            - agent_jet_job: The AgentJetJob configuration to sync.
+            - agentjet_job: The AgentJetJob configuration to sync.
             - force_restart: If True, forces a restart of the engine.
         """
         if force_restart:
@@ -675,7 +955,7 @@ class SwarmClient(SwarmClientBase):
             self.stop_engine()
             time.sleep(8)
 
-        if agent_jet_job.ensure_new_experiment and not force_restart:
+        if agentjet_job.ensure_new_experiment and not force_restart:
             logger.warning("ensure_new_experiment is set to True, but force_restart is not set! Will still continue the experiment on the current model version!")
             time.sleep(8)
 
@@ -686,7 +966,7 @@ class SwarmClient(SwarmClientBase):
         current_status, _ = self.get_engine_status()
         if current_status == "ENGINE.OFFLINE":
             self.logger_info("Engine is OFFLINE. Syncing train config and starting engine...")
-            self.sync_train_config(agent_jet_job)
+            self.sync_train_config(agentjet_job)
             self.start_engine()
         elif current_status == "ENGINE.ROLLING":
             self.logger_info("Engine is already ROLLING. No action needed.")
@@ -694,6 +974,9 @@ class SwarmClient(SwarmClientBase):
             self.logger_info("Engine is already ROLLING. No action needed.")
         elif current_status in ["ENGINE.CANNOT_CONNECT"]:
             logger.error("Unable to connect to swarm server.")
+            if _retry_once:
+                time.sleep(16)
+                return self.auto_sync_train_config_and_start_engine(agentjet_job, force_restart=force_restart, _retry_once=False)
             raise RuntimeError("Unable to connect to swarm server.")
         elif current_status in ["ENGINE.BOOTING", "ENGINE.WEIGHT_SYNCING"]:
             self.logger_info(f"Engine is {current_status}. Waiting until it becomes ROLLING...")
@@ -767,6 +1050,62 @@ class SwarmClient(SwarmClientBase):
         except Exception:
             return "saved_experiments"
 
+    def agree_sync_weight(self) -> bool:
+        """Notify the swarm server that this client agrees to a weight sync.
+
+        The server only accepts the agreement if this client is in its
+        active-client list (i.e. has end_episode'd at least one rewarded
+        episode since the last sync). Used together with the
+        `rollout_until_any_client_agree_sync_weight` /
+        `rollout_until_all_clients_agree_sync_weight` stop conditions so the
+        client can decide for itself when its current batch is "good enough".
+
+        Important: this call retries indefinitely on rejection or error. A
+        dropped agreement can stall the trainer (e.g. under "all clients
+        agree"), and the most common rejection -- "client not yet in active
+        list" -- clears itself once the just-finished end_episode propagates.
+        The only early exit is if the engine has left ROLLING/ROLLING_POST,
+        since the agreement would be wiped by the server-side reset anyway.
+
+        Returns: True once the agreement was registered, False if the engine
+            left rolling state before agreement.
+        """
+
+        assert self._agentjet_job, "Please call sync_train_config with a valid AgentJetJob before starting the engine."
+        assert self._agentjet_job.swarm_mode_sample_collection_method in ["rollout_until_any_client_agree_sync_weight", "rollout_until_all_clients_agree_sync_weight"], \
+            "agree_sync_weight is only applicable when swarm_mode_sample_collection_method is set to rollout_until_any_client_agree_sync_weight or rollout_until_all_clients_agree_sync_weight."
+
+        while True:
+            engine_status, _ = self.get_engine_status()
+            if engine_status not in ("ENGINE.ROLLING", "ENGINE.ROLLING_POST"):
+                logger.warning(
+                    f"agree_sync_weight: engine is {engine_status}, abandoning "
+                    f"agreement (would be reset by server-side cleanup anyway)."
+                )
+                return False
+            try:
+                req_obj = AgreeSyncWeightRequest(client_uuid=self.client_uuid)
+                resp = self._http_client.post(
+                    f"{self.server_url}/agree_sync_weight",
+                    json=req_obj.model_dump(),
+                    timeout=10,
+                )
+                raise_for_status_with_detail(resp)
+                data = BoolResponse.model_validate(resp.json())
+                if data.success:
+                    if self.verbose:
+                        self.logger_info("agree_sync_weight: registered with server")
+                    self._wait_until_status_change_to(desired_status_list=["ENGINE.ROLLING_POST", "ENGINE.WEIGHT_SYNCING"])
+                    return True
+                logger.warning(f"agree_sync_weight rejected: {data.failure_reason}. Retrying in {AGREE_SYNC_WEIGHT_RETRY_DELAY}s...")
+            except SwarmServerOfflineError:
+                raise
+            except Exception as e:
+                if self._should_refresh_client_on_error(e):
+                    self._refresh_http_client()
+                logger.error(f"agree_sync_weight errored: {e}. Retrying in {AGREE_SYNC_WEIGHT_RETRY_DELAY}s...")
+            time.sleep(AGREE_SYNC_WEIGHT_RETRY_DELAY)
+
     def get_rollout_stat(self) -> CurrentBatchRolloutPoolInformation:
         """
         Get the current batch rollout pool information from the Swarm server.
@@ -814,6 +1153,16 @@ class SwarmClient(SwarmClientBase):
 
 
 def auto_train_with_dataset(dataset, swarm_worker: SwarmClient, execute_agent, local_grpo_n=2, remote_batch_size=8):
+    """
+    Automatically train with a dataset using the swarm worker.
+
+    Args:
+        dataset: The dataset providing training tasks via generate_training_tasks().
+        swarm_worker: The SwarmClient instance for communication with the server.
+        execute_agent: A callable that executes the agent on a task and returns WorkflowOutput.
+        local_grpo_n: Number of local GRPO repeats per task.
+        remote_batch_size: Number of parallel remote workers.
+    """
     from ajet.utils.thread_executors import PeriodicDrainThreadPoolExecutor
 
     def rollout(task) -> float | None:
