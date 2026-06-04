@@ -91,8 +91,8 @@ def split_keys_and_operators(
     """
     Parse expression string using AST and extract keys and operators
 
-    Input example: (min(ajet.rollout.max_env_worker // ajet.rollout.n_vllm_engine, 64))
-    Output example: (['ajet.rollout.max_env_worker', 'ajet.rollout.n_vllm_engine'], <function for computing result>)
+    Input example: (min(ajet.rollout.max_env_worker // ajet.rollout.n_inference_engine, 64))
+    Output example: (['ajet.rollout.max_env_worker', 'ajet.rollout.n_inference_engine'], <function for computing result>)
     """
 
     # Parse the expression
@@ -179,14 +179,14 @@ def split_keys_and_operators(
 #     print()
 
 #     # Example 2
-#     operation_str2 = "(ajet.rollout.max_env_worker // ajet.rollout.n_vllm_engine)"
+#     operation_str2 = "(ajet.rollout.max_env_worker // ajet.rollout.n_inference_engine)"
 #     known_operators2 = []
 
 #     keys2, func2 = split_keys_and_operators(operation_str2)
 #     print("Example 2:")
 #     print(f"Extracted keys: {keys2}")
 
-#     values2 = {"ajet.rollout.max_env_worker": 100, "ajet.rollout.n_vllm_engine": 8}
+#     values2 = {"ajet.rollout.max_env_worker": 100, "ajet.rollout.n_inference_engine": 8}
 #     result2 = func2(values2)
 #     print(f"Computed result: {result2}")  # 100 // 8 = 12
 #     print()
@@ -204,7 +204,7 @@ def split_keys_and_operators(
 #     print(f"Computed result: {result3}")  # 100 * 5 / 10 + 20 - 5 = 65.0
 
 #     # Example 4
-#     operation_str4 = "(min(ajet.rollout.max_env_worker // ajet.rollout.n_vllm_engine, 64))"
+#     operation_str4 = "(min(ajet.rollout.max_env_worker // ajet.rollout.n_inference_engine, 64))"
 #     known_operators4 = []
 
 #     keys4, func4 = split_keys_and_operators(operation_str4)
@@ -213,7 +213,7 @@ def split_keys_and_operators(
 
 #     values4 = {
 #         "ajet.rollout.max_env_worker": 512,
-#         "ajet.rollout.n_vllm_engine": 4,
+#         "ajet.rollout.n_inference_engine": 4,
 #     }
 #     result4 = func4(values4)
 #     print(f"Computed result: {result4}")  # 64

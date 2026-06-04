@@ -138,8 +138,8 @@ All keys live under the `ajet:` root.
 - **Default:** `"verl"`.
 - **Description:** Training backend that controls the entire training pipeline. Valid values:
     - `"verl"` — Full distributed training using [VeRL](https://github.com/volcengine/verl). Supports FSDP (Fully Sharded Data Parallel), multi-node training, and all production features. Recommended for real training runs.
-    - `"trinity"` — Alternative distributed backend. Includes special batch size validation (auto-adjusts `train_batch_size` to be divisible by `fsdp_world_size`) and uses different config mappings. Supports multiple vLLM engine instances via `n_vllm_engine`.
-    - `"debug"` — Lightweight single-machine mode that connects to an external OpenAI-compatible vLLM server instead of launching a full training loop. Only runs inference and rollout—no weight updates. Sets `AJET_DEBUG=1` environment variable. Ideal for fast iteration on workflows and reward functions.
+    - `"trinity"` — Alternative distributed backend. Includes special batch size validation (auto-adjusts `train_batch_size` to be divisible by `fsdp_world_size`) and uses different config mappings. Supports multiple inference engine instances via `n_inference_engine`.
+    - `"debug"` — Lightweight single-machine mode that connects to an external OpenAI-compatible inference server instead of launching a full training loop. Only runs inference and rollout—no weight updates. Sets `AJET_DEBUG=1` environment variable. Ideal for fast iteration on workflows and reward functions.
 
 
 ## `ajet.model`
@@ -214,7 +214,7 @@ Controls how the agent interacts during rollout (inference).
 
 - **Type:** float.
 - **Default:** `0.9`.
-- **Description:** Sampling temperature during **training** rollouts. Passed directly to the inference engine (vLLM/SGLang) as `temperature` in the sampling parameters. Higher values produce more diverse outputs for better exploration. During validation, this is overridden by `rollout.val_kwargs.temperature` (default `0.0` for greedy decoding).
+- **Description:** Sampling temperature during **training** rollouts. Passed directly to the inference engine (inference/SGLang) as `temperature` in the sampling parameters. Higher values produce more diverse outputs for better exploration. During validation, this is overridden by `rollout.val_kwargs.temperature` (default `0.0` for greedy decoding).
 
 ### `ajet.rollout.top_p`
 
@@ -238,7 +238,7 @@ Controls how the agent interacts during rollout (inference).
 
 - **Type:** int.
 - **Default:** `4096`.
-- **Description:** Maximum number of tokens the model can produce in a single LLM call (one assistant turn). Enforced at multiple levels: (1) passed as `max_tokens` to the vLLM engine to hard-stop generation, (2) validated via assertion after generation, and (3) used to compute the effective context budget: if `prompt_length ≥ max_model_len - max_response_length_in_one_turn`, the turn is terminated early with `finish_reason="length"`. This is distinct from `data.max_response_length`, which limits the cumulative response across all turns.
+- **Description:** Maximum number of tokens the model can produce in a single LLM call (one assistant turn). Enforced at multiple levels: (1) passed as `max_tokens` to the inference engine to hard-stop generation, (2) validated via assertion after generation, and (3) used to compute the effective context budget: if `prompt_length ≥ max_model_len - max_response_length_in_one_turn`, the turn is terminated early with `finish_reason="length"`. This is distinct from `data.max_response_length`, which limits the cumulative response across all turns.
 
 ### `ajet.rollout.max_model_len`
 
@@ -250,19 +250,19 @@ Controls how the agent interacts during rollout (inference).
 
 - **Type:** int.
 - **Default:** `1`.
-- **Description:** Tensor-parallel size for the vLLM rollout engine. Splits model layers across this many GPUs for inference. When combined with `n_vllm_engine`, total inference GPU allocation = `n_vllm_engine × tensor_model_parallel_size`. Increase for models too large to fit on a single GPU. In debug mode, use `debug.debug_tensor_parallel_size` instead.
+- **Description:** Tensor-parallel size for the inference rollout engine. Splits model layers across this many GPUs for inference. When combined with `n_inference_engine`, total inference GPU allocation = `n_inference_engine × tensor_model_parallel_size`. Increase for models too large to fit on a single GPU. In debug mode, use `debug.debug_tensor_parallel_size` instead.
 
-### `ajet.rollout.n_vllm_engine`
+### `ajet.rollout.n_inference_engine`
 
 - **Type:** int.
 - **Default:** `1`.
-- **Description:** Number of independent vLLM engine instances for inference. **Only effective with the `trinity` backend**—ignored by the `verl` and `debug` backends. Multiple engines allow horizontal scaling of inference throughput. Total inference GPU allocation = `n_vllm_engine × tensor_model_parallel_size`. Also affects worker distribution: each engine handles up to `max_env_worker / n_vllm_engine` concurrent requests.
+- **Description:** Number of independent inference engine instances for inference. **Only effective with the `trinity` backend**—ignored by the `verl` and `debug` backends. Multiple engines allow horizontal scaling of inference throughput. Total inference GPU allocation = `n_inference_engine × tensor_model_parallel_size`. Also affects worker distribution: each engine handles up to `max_env_worker / n_inference_engine` concurrent requests.
 
 ### `ajet.rollout.max_num_seqs`
 
 - **Type:** int.
 - **Default:** `10`.
-- **Description:** Maximum number of sequences batched in parallel per vLLM engine instance. Passed to vLLM as `--max-num-seqs`. Higher values improve throughput but increase GPU memory usage. Lower values reduce memory but may cause underutilization. Tune based on available GPU memory and `max_model_len`.
+- **Description:** Maximum number of sequences batched in parallel per inference engine instance. Passed to inference as `--max-num-seqs`. Higher values improve throughput but increase GPU memory usage. Lower values reduce memory but may cause underutilization. Tune based on available GPU memory and `max_model_len`.
 
 ### `ajet.rollout.name`
 
@@ -654,19 +654,19 @@ Active only when `backbone: debug`. Connects to an external OpenAI-compatible en
 
 - **Type:** int.
 - **Default:** `18000`.
-- **Description:** HTTP port of the external OpenAI-compatible vLLM server. AgentJet creates a `ChatCompletionScheduler` pointing to `http://localhost:{port}/v1` and uses the OpenAI client to call `chat.completions.create()`. The vLLM server must be running before launching AgentJet in debug mode, or AgentJet can auto-launch it via `LaunchCommandWhenAbsent`.
+- **Description:** HTTP port of the external OpenAI-compatible inference server. AgentJet creates a `ChatCompletionScheduler` pointing to `http://localhost:{port}/v1` and uses the OpenAI client to call `chat.completions.create()`. The inference server must be running before launching AgentJet in debug mode, or AgentJet can auto-launch it via `LaunchCommandWhenAbsent`.
 
-### `ajet.debug.debug_vllm_seed`
+### `ajet.debug.debug_seed`
 
 - **Type:** int.
 - **Default:** `12345`.
-- **Description:** Random seed passed to the vLLM server as `--seed` when auto-launching. Controls randomness in token sampling during inference. Use a fixed seed for reproducible rollout results during debugging.
+- **Description:** Random seed passed to the inference server as `--seed` when auto-launching. Controls randomness in token sampling during inference. Use a fixed seed for reproducible rollout results during debugging.
 
 ### `ajet.debug.debug_tensor_parallel_size`
 
 - **Type:** int.
 - **Default:** `4`.
-- **Description:** Tensor-parallel size for the vLLM engine in debug mode. Passed as `--tensor-parallel-size` to the vLLM server. Automatically capped to the number of available GPUs if the configured value exceeds availability. This is separate from `rollout.tensor_model_parallel_size`, which is used by the verl/trinity backends during training.
+- **Description:** Tensor-parallel size for the inference engine in debug mode. Passed as `--tensor-parallel-size` to the inference server. Automatically capped to the number of available GPUs if the configured value exceeds availability. This is separate from `rollout.tensor_model_parallel_size`, which is used by the verl/trinity backends during training.
 
 
 ## `ajet.trainer_common`
@@ -935,7 +935,7 @@ LoRA fine-tuning. Disabled by default. Set `lora_rank > 0` to enable.
 
 - **Type:** str.
 - **Default:** `"auto"`.
-- **Description:** Weight loading format for the vLLM rollout engine when using LoRA. Mapped to `actor_rollout_ref.rollout.load_format`. Options:
+- **Description:** Weight loading format for the inference rollout engine when using LoRA. Mapped to `actor_rollout_ref.rollout.load_format`. Options:
     - `"auto"` — Auto-detect the weight format from the model directory.
     - `"safetensors"` — Explicitly use SafeTensors format.
 
@@ -979,7 +979,7 @@ Swarm mode decouples rollout workers from the training loop. Workers can run on 
 
 - **Type:** bool.
 - **Default:** `false`.
-- **Description:** Enable swarm mode, which decouples rollout workers from the training loop. When enabled, the vLLM engine switches from `"sample"` mode to `"sample-ts"` (time-series, distributed), and rollout workers communicate via the interchange server using ZMQ sockets. Workers can run on GPU-less machines and receive `base_url`/`api_key` credentials for OpenAI-compatible inference. Requires `enable_interchange_server: true`.
+- **Description:** Enable swarm mode, which decouples rollout workers from the training loop. When enabled, the inference engine switches from `"sample"` mode to `"sample-ts"` (time-series, distributed), and rollout workers communicate via the interchange server using ZMQ sockets. Workers can run on GPU-less machines and receive `base_url`/`api_key` credentials for OpenAI-compatible inference. Requires `enable_interchange_server: true`.
 
 ### `ajet.enable_interchange_server`
 
@@ -1115,9 +1115,9 @@ These are verl-native defaults (from `verl_default.yaml`) that you may want to b
 | `actor_rollout_ref.actor.clip_ratio` | `0.2` | PPO clip ratio |
 | `actor_rollout_ref.actor.ppo_max_token_len_per_gpu` | `16384` | Max tokens per GPU for actor training |
 | `actor_rollout_ref.rollout.mode` | `async` | Async rollout mode |
-| `actor_rollout_ref.rollout.gpu_memory_utilization` | `0.85` | vLLM GPU memory fraction |
+| `actor_rollout_ref.rollout.gpu_memory_utilization` | `0.85` | inference GPU memory fraction |
 | `actor_rollout_ref.rollout.enforce_eager` | `true` | Disables CUDA graphs |
-| `actor_rollout_ref.rollout.enable_sleep_mode` | `true` | Sleeps vLLM between steps to free memory |
+| `actor_rollout_ref.rollout.enable_sleep_mode` | `true` | Sleeps inference between steps to free memory |
 | `actor_rollout_ref.model.enable_gradient_checkpointing` | `true` | Activation checkpointing |
 | `algorithm.adv_estimator` | `grpo` | GRPO advantage estimator |
 | `algorithm.gamma` | `1.0` | Reward discount |
@@ -1138,7 +1138,7 @@ ajet --conf <yaml> [--backbone verl|trinity|debug] [flags]
 
 - `--exp-dir DIR` — Experiment output directory. Default: `saved_experiments`.
 
-- `--autokill` — Kill stale ray/vllm/python processes before launch.
+- `--autokill` — Kill stale ray/inference/python processes before launch.
 
 - `--kill KEYWORDS` — Kill processes matching `|`-separated keywords.
 
@@ -1196,7 +1196,7 @@ ajet --conf <yaml> [--backbone verl|trinity|debug] [flags]
 
 ### Reduce GPU Memory
 
-When training large models on limited GPU hardware, combine several memory-saving techniques. FSDP offloading moves model parameters and optimizer states to CPU, freeing GPU VRAM at the cost of slower training steps. Reducing `max_model_len` shrinks the per-sequence memory allocation in the vLLM engine. Lowering `max_num_seqs` limits how many sequences vLLM batches in parallel, further reducing peak memory. A smaller `train_batch_size` reduces the number of samples processed per gradient update. Finally, enabling LoRA (e.g. `lora_rank: 16`) trains only low-rank adapter matrices instead of all model weights, dramatically cutting both memory and compute.
+When training large models on limited GPU hardware, combine several memory-saving techniques. FSDP offloading moves model parameters and optimizer states to CPU, freeing GPU VRAM at the cost of slower training steps. Reducing `max_model_len` shrinks the per-sequence memory allocation in the inference engine. Lowering `max_num_seqs` limits how many sequences inference batches in parallel, further reducing peak memory. A smaller `train_batch_size` reduces the number of samples processed per gradient update. Finally, enabling LoRA (e.g. `lora_rank: 16`) trains only low-rank adapter matrices instead of all model weights, dramatically cutting both memory and compute.
 
 ```yaml
 ajet:
@@ -1254,7 +1254,7 @@ ajet:
 
 ### Fast Debug Iteration (Deprecated, recommend to use swarm mode instead)
 
-Use debug mode to quickly test your workflow and reward function without launching a full distributed training loop. Debug mode connects to an external vLLM server and only runs inference + rollout — no weight updates occur. Setting `debug_max_parallel: 1` and `debug_first_n_tasks: 1` runs a single task sequentially, making it easy to step through the logic and inspect outputs. You can also override the backbone from the command line with `--backbone=debug` without modifying your YAML.
+Use debug mode to quickly test your workflow and reward function without launching a full distributed training loop. Debug mode connects to an external inference server and only runs inference + rollout — no weight updates occur. Setting `debug_max_parallel: 1` and `debug_first_n_tasks: 1` runs a single task sequentially, making it easy to step through the logic and inspect outputs. You can also override the backbone from the command line with `--backbone=debug` without modifying your YAML.
 
 ```yaml
 ajet:

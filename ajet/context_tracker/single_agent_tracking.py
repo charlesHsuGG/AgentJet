@@ -355,6 +355,7 @@ class SingleAgentContextTracker(BaseTracker):
             tracker_tokenized["reference_advantage"] = self.reward_structure.step_advantage[index]
         except Exception:
             tracker_tokenized["reference_advantage"] = 0
+        tracker_tokenized["reward_extra"] = self.reward_structure.metadata
 
         return tracker_tokenized
 

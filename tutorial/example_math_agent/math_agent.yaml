@@ -37,7 +37,7 @@ ajet:
       - "wrong_toolcall"
     max_response_length_in_one_turn: 1024
     max_model_len: 10000
-    n_vllm_engine: 2
+    n_inference_engine: 2
 
   data:
     train_batch_size: 100

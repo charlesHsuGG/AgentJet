@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import os
+import pickle
 import shutil
 import signal
 import subprocess
@@ -23,8 +24,10 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
 
 import msgpack
+import numpy as np
+import torch
 import zmq
-
+from transformers import BatchEncoding, PreTrainedTokenizer
 
 _CACHE_OPS = ("encode", "decode", "batch_decode", "apply_chat_template")
 _DEFAULT_CACHE_SIZE = 8192
@@ -61,8 +64,111 @@ def _serve(
     )
 
 
+def ndarray_to_bytes(obj):
+    if obj.dtype == 'O':
+        return obj.dumps()
+    else:
+        if sys.platform == 'darwin':
+            return obj.tobytes()
+        else:
+            return obj.data if obj.flags['C_CONTIGUOUS'] else obj.tobytes()
+
+
+def tostr(x):
+    if isinstance(x, bytes):
+        return x.decode()
+    else:
+        return str(x)
+
+
+def _unpack_dtype(dtype):
+    """
+    Unpack dtype descr, recursively unpacking nested structured dtypes.
+    """
+
+    if isinstance(dtype, (list, tuple)):
+        # Unpack structured dtypes of the form: (name, type, *shape)
+        dtype = [
+            (subdtype[0], _unpack_dtype(subdtype[1])) + tuple(subdtype[2:])
+            for subdtype in dtype
+        ]
+    return np.dtype(dtype)
+
+
+def encode_tokens(obj):
+    if torch.is_tensor(obj):
+        # Ensure tensor is on CPU before converting to numpy/bytes
+        obj_cpu = obj.detach().cpu()
+        return {
+            b"__tensor__": True,
+            b"dtype": str(obj_cpu.dtype).encode("utf-8"),
+            b"shape": list(obj_cpu.shape),
+            # Convert underlying memory storage directly to bytes
+            b"data": obj_cpu.numpy().tobytes()
+        }
+    elif isinstance(obj, np.ndarray):
+        # If the dtype is structured, store the interface description;
+        # otherwise, store the corresponding array protocol type string:
+        if obj.dtype.kind in ('V', 'O'):
+            kind = bytes(obj.dtype.kind, 'ascii')
+            descr = obj.dtype.descr
+        else:
+            kind = b''
+            descr = obj.dtype.str
+
+        return {
+            b'nd': True,
+            b'type': descr,
+            b'kind': kind,
+            b'shape': obj.shape,
+            b'data': ndarray_to_bytes(obj)
+        }
+    elif isinstance(obj, (np.bool_, np.number)):
+        num_to_bytes = lambda obj: obj.data
+        return {
+            b'nd': False,
+            b'type': obj.dtype.str,
+            b'data': num_to_bytes(obj)
+        }
+    elif isinstance(obj, complex):
+        return {
+            b'complex': True,
+            b'data': obj.__repr__()
+        }
+    return obj
+
+
+def decode_tokens(obj):
+    if b"__tensor__" in obj:
+        # Reconstruct the numpy array from raw bytes
+        dtype_str = obj[b"dtype"].decode("utf-8").replace("torch.", "")
+        np_arr = np.frombuffer(obj[b"data"], dtype=getattr(np, dtype_str))
+
+        # Reshape and convert back to a PyTorch tensor
+        return torch.from_numpy(np_arr.reshape(obj[b"shape"])).clone()
+    elif b'nd' in obj:
+        if obj[b'nd'] is True:
+
+            # Check if b'kind' is in obj to enable decoding of data
+            # serialized with older versions (#20) or data
+            # that had dtype == 'O' (#46):
+            if b'kind' in obj and obj[b'kind'] == b'V':
+                descr = [tuple(tostr(t) if type(t) is bytes else t for t in d) for d in obj[b'type']]
+            elif b'kind' in obj and obj[b'kind'] == b'O':
+                return pickle.loads(obj[b'data'])
+            else:
+                descr = obj[b'type']
+            return np.ndarray(buffer=obj[b'data'], dtype=_unpack_dtype(descr), shape=obj[b'shape'])
+        else:
+            descr = obj[b'type']
+            return np.frombuffer(obj[b'data'], dtype=_unpack_dtype(descr))[0]
+    elif b'complex' in obj:
+        return complex(tostr(obj[b'data']))
+    return obj
+
+
 def _serve_tokenizer(
-    tokenizer,
+    tokenizer: PreTrainedTokenizer,
     ipc_path: str,
     *,
     cache_size: int,
@@ -82,7 +188,7 @@ def _serve_tokenizer(
 
     if ready_file:
         try:
-            with open(ready_file, "w") as fh:
+            with open(ready_file, "w", encoding="utf-8") as fh:
                 fh.write(str(os.getpid()))
         except OSError as exc:
             if logger:
@@ -117,6 +223,9 @@ def _serve_tokenizer(
                 result = tokenizer.batch_decode(*args, **kwargs)
             elif op == "apply_chat_template":
                 result = tokenizer.apply_chat_template(*args, **kwargs)
+                if isinstance(result, BatchEncoding):
+                    # BatchEncoding isn't msgpack-serializable, so convert to dict.
+                    result = result.data
             else:
                 return msgpack.packb(
                     {"ok": False, "error": f"unknown op {op!r}"}, use_bin_type=True
@@ -127,7 +236,7 @@ def _serve_tokenizer(
             err = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
             return msgpack.packb({"ok": False, "error": err}, use_bin_type=True), str(op)
 
-        return msgpack.packb({"ok": True, "result": result}, use_bin_type=True), str(op)
+        return msgpack.packb({"ok": True, "result": result}, use_bin_type=True, default=encode_tokens), str(op)
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         while True:
@@ -247,7 +356,7 @@ class CachedTokenizer:
             self._tls.sock = None
             raise RuntimeError(f"tokenizer service timeout (op={op})") from exc
 
-        resp = msgpack.unpackb(raw, raw=False)
+        resp = msgpack.unpackb(raw, raw=False, object_hook=decode_tokens)
         if not resp.get("ok"):
             raise RuntimeError(f"tokenizer service error (op={op}): {resp.get('error')}")
         return resp.get("result")

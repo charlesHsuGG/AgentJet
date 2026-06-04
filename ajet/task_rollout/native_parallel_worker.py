@@ -653,12 +653,15 @@ class VerlRolloutManager(DynamicRolloutManager):
         response_position_ids: torch.Tensor | List[torch.Tensor] = []
         prompt_loss_mask: torch.Tensor | List[torch.Tensor] = []
         response_loss_mask: torch.Tensor | List[torch.Tensor] = []
+        prompt_logprobs: torch.Tensor | List[torch.Tensor] = []
+        response_logprobs: torch.Tensor | List[torch.Tensor] = []
 
         messages = []
         step_reward_scores = []
         task_ids = []
         episode_uuids = []
         reference_advantage = []
+        reward_extra_info_list = []
 
         for sample in samples:
             assert (
@@ -674,7 +677,7 @@ class VerlRolloutManager(DynamicRolloutManager):
                 raise RuntimeError(f"Sample has prompt_ids length {len(sample.prompt_ids)} ")
 
             if len(sample.response_ids) > self.config.ajet.data.max_response_length:
-                raise RuntimeError(f"Sample has prompt_ids length {len(sample.prompt_ids)} ")
+                raise RuntimeError(f"Sample has response_ids length {len(sample.response_ids)} ")
 
             assert len(sample.prompt_ids) != 0
             assert len(sample.response_ids) != 0
@@ -696,10 +699,14 @@ class VerlRolloutManager(DynamicRolloutManager):
             prompt_loss_mask.append(torch.tensor(sample.prompt_loss_mask, dtype=torch.int))
             response_loss_mask.append(torch.tensor(sample.response_loss_mask, dtype=torch.int))
 
+            prompt_logprobs.append(torch.tensor(sample.prompt_logprobs, dtype=torch.float32))
+            response_logprobs.append(torch.tensor(sample.response_logprobs, dtype=torch.float32))
+
             reference_advantage.append(sample.reference_advantage)
 
             messages.append({"messages": sample.messages})
             step_reward_scores.append(sample.step_reward)  # append reward scalar
+            reward_extra_info_list.append(sample.reward_extra)
 
         max_prompt_length_this_batch = max([p.shape[-1] for p in prompt_ids])
         assert max_prompt_length_this_batch <= self.config.ajet.data.max_prompt_length
@@ -755,6 +762,7 @@ class VerlRolloutManager(DynamicRolloutManager):
             response_attention_mask, batch_first=True, padding_value=0
         )
         response_loss_mask = pad_sequence(response_loss_mask, batch_first=True, padding_value=0)
+        response_logprobs = pad_sequence(response_logprobs, batch_first=True, padding_value=0.0)
 
         response_ids = pad_sequence_to_length(
             response_ids, max_response_length_this_batch, self.pad_token_id
@@ -764,6 +772,9 @@ class VerlRolloutManager(DynamicRolloutManager):
         )
         response_loss_mask = pad_sequence_to_length(
             response_loss_mask, max_response_length_this_batch, 0
+        )
+        response_logprobs = pad_sequence_to_length(
+            response_logprobs, max_response_length_this_batch, 0.0
         )
 
         delta_position_id = (
@@ -786,9 +797,12 @@ class VerlRolloutManager(DynamicRolloutManager):
                 "attention_mask": attention_mask,
                 "position_ids": position_ids,
                 "loss_mask": loss_mask,
+                "rollout_log_probs": response_logprobs,
             },
             batch_size=len(samples),
         )
+
+        reward_extra_keys = list(set.intersection(*map(set, reward_extra_info_list)))
 
         return DataProto(
             batch=batch,
@@ -798,6 +812,13 @@ class VerlRolloutManager(DynamicRolloutManager):
                 "messages": np.array(messages),
                 "reward_scores": np.array(step_reward_scores),
                 "reference_advantage": np.array(reference_advantage),
-                "raw_prompt": np.array([message["messages"][:-1] for message in messages]),
+                "raw_prompt": np.array([str(message["messages"][:-1]) for message in messages]),
+                **{
+                    reward_extra_key: np.array([str(reward_extra_info.get(reward_extra_key, "")) for reward_extra_info in reward_extra_info_list])
+                    for reward_extra_key in reward_extra_keys
+                }
             },
+            meta_info={
+                "reward_extra_keys": reward_extra_keys
+            }
         )

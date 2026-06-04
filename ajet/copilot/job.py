@@ -9,17 +9,16 @@ from __future__ import annotations
 
 import os
 import time
-import yaml
+from typing import Any, Callable, List, Literal, Union, cast
 
-from typing import Any, Callable, List, Union, cast
-from loguru import logger
-from ajet.default_config.ajet_config_schema import Config
-from ajet.utils.config_utils import (
-    expand_ajet_hierarchical_config,
-    read_ajet_hierarchical_config,
-)
-from ajet.utils.dynamic_import import cls_to_path
+import yaml
 from beast_logger import print_dict
+from loguru import logger
+
+from ajet.default_config.ajet_config_schema import Config
+from ajet.utils.config_utils import (expand_ajet_hierarchical_config,
+                                     read_ajet_hierarchical_config)
+from ajet.utils.dynamic_import import cls_to_path
 
 
 def override_current_yaml_value_if_given(override_value, current_value):
@@ -28,16 +27,19 @@ def override_current_yaml_value_if_given(override_value, current_value):
     else:
         return current_value
 
+
 def _set_nested_attr(obj, attr_path: str, value):
     keys = attr_path.split(".")
     for key in keys[:-1]:
         obj = getattr(obj, key)
     setattr(obj, keys[-1], value)
 
+
 def _get_nested_attr(obj, attr_path: str):
     for key in attr_path.split("."):
         obj = getattr(obj, key)
     return obj
+
 
 class AgentJetJob:
     """Programmatic interface for configuring ( Arguments + YAML -->  New YAML ) and launching AgentJet training jobs.
@@ -100,7 +102,10 @@ class AgentJetJob:
         val_print_to_markdown_file_path: Path to a file where validation metrics are appended after every validation pass (default None, disabled).
         train_print_to_markdown_file_path: Path to a file where training metrics are appended after every training step (default None, disabled).
         total_training_steps: Hard cap on total training steps. If None (default), training runs for `total_epochs` epochs.
-        timeline_compare_level: Comparison granularity used by the context tracker's timeline merging policy. One of 'text' (relaxed text compare, more aggressive merging, very low cost) or 'token' (strict token compare, less aggressive merging). Default 'text'.
+        timeline_compare_level: Comparison granularity used by the context tracker's timeline merging policy. One of 'text' (relaxed text compare, more aggressive merging, very low cost)
+        or 'token' (strict token compare, less aggressive merging). Default 'text'.
+        inference_server_type: The type of inference server to use for rollouts, e.g., "vllm" or "sglang" (default "vllm").
+        inference_config: Additional config dict to pass to the rollout engine, e.g., vLLM engine kwargs such as {"num_gpus": 4, "tensor_model_parallel_size": 2, "max_num_seqs": 128} (default None).
     """
 
     def __init__(
@@ -144,6 +149,8 @@ class AgentJetJob:
         train_print_to_markdown_file_path: str | None = None,
         total_training_steps: int | None = None,
         timeline_compare_level: str | None = None,
+        inference_server_type: Literal["vllm", "sglang"] | None = None,
+        inference_config: dict | None = None,
     ) -> None:
 
         if base_yaml_config is None:
@@ -212,47 +219,51 @@ class AgentJetJob:
         self.train_print_to_markdown_file_path: str = cast(str, train_print_to_markdown_file_path)
         self.total_training_steps: int = cast(int, total_training_steps)
         self.timeline_compare_level: str = cast(str, timeline_compare_level)
+        self.inference_server_type: str = cast(str, inference_server_type)
+        self.inference_config: dict = cast(dict, inference_config or {})
 
         # see `ajet/default_config/ajet_swarm_default.yaml`
         overrides = {
             # left: [yaml key navigation]                  right: [AgentJetJob self attr]
-            "ajet.experiment_dir":                          "experiment_dir",
-            "ajet.project_name":                            "project_name",
-            "ajet.experiment_name":                         "experiment_name",
-            "ajet.trainer_common.logger":                   "logging",
-            "ajet.model.path":                              "model",
-            "ajet.trainer_common.n_gpus_per_node":          "n_gpu",
-            "ajet.trainer_common.nnodes":                   "nnodes",
-            "ajet.trainer_common.algorithm.adv_estimator":  "algorithm",
-            "ajet.rollout.num_repeat":                      "num_repeat",
-            "ajet.data.train_batch_size":                   "batch_size",
-            "ajet.enable_swarm_mode":                       "swarm_mode",
-            "ajet.swarm_mode_sample_collection_method":     "swarm_mode_sample_collection_method",
-            "ajet.rollout.max_env_worker":                  "max_env_worker",
-            "ajet.backbone":                                "backbone",
-            "ajet.data.max_prompt_length":                  "max_prompt_length",
-            "ajet.data.max_response_length":                "max_response_length",
+            "ajet.experiment_dir": "experiment_dir",
+            "ajet.project_name": "project_name",
+            "ajet.experiment_name": "experiment_name",
+            "ajet.trainer_common.logger": "logging",
+            "ajet.model.path": "model",
+            "ajet.trainer_common.n_gpus_per_node": "n_gpu",
+            "ajet.trainer_common.nnodes": "nnodes",
+            "ajet.trainer_common.algorithm.adv_estimator": "algorithm",
+            "ajet.rollout.num_repeat": "num_repeat",
+            "ajet.data.train_batch_size": "batch_size",
+            "ajet.enable_swarm_mode": "swarm_mode",
+            "ajet.swarm_mode_sample_collection_method": "swarm_mode_sample_collection_method",
+            "ajet.rollout.max_env_worker": "max_env_worker",
+            "ajet.backbone": "backbone",
+            "ajet.data.max_prompt_length": "max_prompt_length",
+            "ajet.data.max_response_length": "max_response_length",
             "ajet.rollout.max_response_length_in_one_turn": "max_response_length_in_one_turn",
-            "ajet.rollout.max_model_len":                   "max_model_len",
-            "ajet.rollout.tensor_model_parallel_size":      "tensor_model_parallel_size",
-            "ajet.rollout.max_num_seqs":                    "max_num_seqs",
-            "ajet.trainer_common.mini_batch_num":           "mini_batch_num",
-            "ajet.lora.lora_rank":                          "lora_rank",
-            "ajet.lora.lora_alpha":                         "lora_alpha",
-            "ajet.lora.target_modules":                     "lora_target_modules",
-            "ajet.lora.load_format":                        "lora_load_format",
-            "ajet.lora.layered_summon":                     "layered_summon",
-            "ajet.rollout.gpu_memory_utilization":          "gpu_memory_utilization",
-            "ajet.trainer_common.optim.lr":                 "lr",
-            "ajet.trainer_common.ppo_epochs":               "ppo_epochs",
-            "ajet.trainer_common.use_kl_loss":              "use_kl_loss",
-            "ajet.trainer_common.use_kl_in_reward":         "use_kl_in_reward",
-            "ajet.trainer_common.kl_penalty_type":          "kl_penalty_type",
-            "ajet.rollout.compute_madness_checklist":       "compute_madness_checklist",
-            "ajet.trainer_common.total_training_steps":     "total_training_steps",
-            "ajet.trainer_common.val_print_to_markdown_file_path":                  "val_print_to_markdown_file_path",
-            "ajet.trainer_common.train_print_to_markdown_file_path":                "train_print_to_markdown_file_path",
-            "ajet.context_tracker.timeline_merging_policy.timeline_compare_level":  "timeline_compare_level",
+            "ajet.rollout.max_model_len": "max_model_len",
+            "ajet.rollout.tensor_model_parallel_size": "tensor_model_parallel_size",
+            "ajet.rollout.max_num_seqs": "max_num_seqs",
+            "ajet.trainer_common.mini_batch_num": "mini_batch_num",
+            "ajet.lora.lora_rank": "lora_rank",
+            "ajet.lora.lora_alpha": "lora_alpha",
+            "ajet.lora.target_modules": "lora_target_modules",
+            "ajet.lora.load_format": "lora_load_format",
+            "ajet.lora.layered_summon": "layered_summon",
+            "ajet.rollout.gpu_memory_utilization": "gpu_memory_utilization",
+            "ajet.trainer_common.optim.lr": "lr",
+            "ajet.trainer_common.ppo_epochs": "ppo_epochs",
+            "ajet.trainer_common.use_kl_loss": "use_kl_loss",
+            "ajet.trainer_common.use_kl_in_reward": "use_kl_in_reward",
+            "ajet.trainer_common.kl_penalty_type": "kl_penalty_type",
+            "ajet.rollout.compute_madness_checklist": "compute_madness_checklist",
+            "ajet.trainer_common.total_training_steps": "total_training_steps",
+            "ajet.trainer_common.val_print_to_markdown_file_path": "val_print_to_markdown_file_path",
+            "ajet.trainer_common.train_print_to_markdown_file_path": "train_print_to_markdown_file_path",
+            "ajet.context_tracker.timeline_merging_policy.timeline_compare_level": "timeline_compare_level",
+            "ajet.rollout.name": "inference_server_type",
+            "ajet.rollout.engine_kwargs": "inference_config"
         }
 
         # if any value given in kwargs, override the corresponding value in config
@@ -272,7 +283,6 @@ class AgentJetJob:
             # write final value to `self`
             # >> e.g. self.model = new_model
             setattr(self, override_val, new_val)
-
 
         assert self.max_prompt_length + self.max_response_length <= self.max_model_len, "illegal token length"
         assert self.max_response_length_in_one_turn <= self.max_response_length
@@ -298,8 +308,6 @@ class AgentJetJob:
 
         print_dict(primary_attributes)
 
-
-
     def build_job_from_yaml(self, yaml_path: str | None) -> dict:
         self.config_as_dict = read_ajet_hierarchical_config(
             yaml_path,
@@ -309,7 +317,6 @@ class AgentJetJob:
         logger.info(f"Built AgentJet job config: {yaml_path}")
         return self.config_as_dict
 
-
     def dump_job_as_yaml(self, yaml_path: str) -> str:
         if os.path.dirname(yaml_path):
             os.makedirs(os.path.dirname(yaml_path), exist_ok=True)
@@ -318,7 +325,6 @@ class AgentJetJob:
         logger.info(f"Saved training config to {yaml_path}")
         return yaml_path
 
-
     def set_workflow(
         self, workflow: Union[str, Callable[..., Any]], ensure_reward_in_workflow: bool = False
     ) -> "AgentJetJob":
@@ -326,7 +332,6 @@ class AgentJetJob:
         # TODO: validate workflow outputs contain reward
         # ensure_reward_in_workflow
         return self
-
 
     def set_data(
         self,

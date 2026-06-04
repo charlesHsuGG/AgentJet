@@ -60,16 +60,16 @@ ajet:
     # TP size for rollout engine
     tensor_model_parallel_size: 1
 
-    # the number of vllm engines, number of gpus for infer is `n_vllm_engine*tensor_model_parallel_size`, this argument is NOT effective when NOT using trinity
-    n_vllm_engine: 1
+    # the number of inference engines, number of gpus for infer is `n_inference_engine*tensor_model_parallel_size`, this argument is NOT effective when NOT using trinity
+    n_inference_engine: 1
 
-    # how many sequences are allowed to be processed in parallel by each vllm engine
+    # how many sequences are allowed to be processed in parallel by each inference engine
     max_num_seqs: 64
 
     # the usage of infer engine, options: (vllm, sglang)
     name: sglang
 
-    # GPU memory utilization for vLLM engine
+    # GPU memory utilization for inference engine
     gpu_memory_utilization: 0.85
 
     # how many times a task should be repeated
@@ -222,10 +222,10 @@ ajet:
     # how many task to sample from training set
     debug_first_n_tasks: 2
 
-    # what is the vllm engine port in the background
+    # what is the inference engine port in the background
     debug_port: 18000
 
-    # what is the seed of the vllm engine in the background
+    # what is the seed of the inference engine in the background
     debug_seed: 12345
 
     # what is the TP size in debug mode
@@ -284,7 +284,7 @@ ajet:
     optim:
       optimizer: AdamW
       optimizer_impl: torch.optim
-      lr: 1.0e-06
+      lr: 1.0e-05
       lr_warmup_steps_ratio: 0.0
       total_training_steps: -1
       weight_decay: 0.01
@@ -302,7 +302,7 @@ ajet:
     use_kl_loss: True
 
     # kl divergence loss coefficient
-    kl_loss_coef: 0.002
+    kl_loss_coef: 0.001
     kl_loss_type: low_var_kl
 
     # number of PPO epochs per update

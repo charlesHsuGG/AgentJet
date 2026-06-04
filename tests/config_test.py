@@ -3,12 +3,10 @@ import unittest
 
 import yaml
 
-from ajet.utils.config_utils import (
-    align_parameters,
-    expand_ajet_hierarchical_config,
-    prepare_experiment_config,
-    read_ajet_hierarchical_config,
-)
+from ajet.utils.config_utils import (align_parameters,
+                                     expand_ajet_hierarchical_config,
+                                     prepare_experiment_config,
+                                     read_ajet_hierarchical_config)
 
 
 class TestConfigUtils(unittest.TestCase):
@@ -66,7 +64,7 @@ class TestConfigUtils(unittest.TestCase):
             self.assertEqual(to_config["explorer"]["rollout_model"]["tensor_parallel_size"], 4)
             # Test computed values
             self.assertEqual(to_config["buffer"]["batch_size"], 120)
-            # (ajet.rollout.max_env_worker // ajet.rollout.n_vllm_engine) = 256 // 2 = 128
+            # (ajet.rollout.max_env_worker // ajet.rollout.n_inference_engine) = 256 // 2 = 128
             self.assertEqual(to_config["explorer"]["runner_per_model"], 128)
 
     def test_config_alignment_verl(self):

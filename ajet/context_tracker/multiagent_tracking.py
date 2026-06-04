@@ -185,7 +185,10 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                 )
             ]
             if ("<think>" in msg_content) and (not previous_message_encounter_user_role):
-                logger.warning(f"Warning! Message content contains <think> tag, but no prior message has `user` role! This is not a common scenario. Please check your agent loop carefully.")
+                logger.warning(
+                    "Warning! Message content contains <think> tag, but no prior message has `user` role! This is not a common scenario. "
+                    "Please check your agent loop carefully."
+                )
 
         return timeline
 
@@ -319,7 +322,7 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                 )
             )
         ):
-            logger.bind(exception=True).info(f"General Warning: merge failure discovered.\n")
+            logger.bind(exception=True).info("General Warning: merge failure discovered.\n")
         return
 
 
@@ -398,8 +401,8 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
             # prompt_token_ids = prompt_token_ids[: -len(self.generation_prompt_token)]
 
         # split CURRENT prompt token ids into message level (split_prompt_token_ids is List[List[int]])
-        split_prompt_token_ids = []
         tmp = []
+        split_prompt_token_ids = []
         for i in range(len(prompt_token_ids)):  # pylint: disable=consider-using-enumerate
             if prompt_token_ids[i] != self.generation_prompt_token[0]:  # split by generation prompt token
                 tmp += [prompt_token_ids[i]]
@@ -411,10 +414,10 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
             split_prompt_token_ids += [tmp]
 
         # split prompt text into message level
-        start_token = self.tokenizer.encode(self.generation_prompt_token[0], add_special_tokens=False)  # make sure generation prompt token is in tokenizer
+        start_token = self.tokenizer.decode(self.generation_prompt_token[0], add_special_tokens=False)  # make sure generation prompt token is in tokenizer
         prompt_text_split = prompt_text.split(start_token)
         assert prompt_text_split[0] == "", f"Prompt text should start with {start_token}"
-        prompt_text_split = prompt_text_split[1:]  # remove the first empty string
+        prompt_text_split = [prompt_text for prompt_text in prompt_text_split if prompt_text]  # remove empty string caused by split
         for i in range(len(prompt_text_split)):  # pylint: disable=consider-using-enumerate
             prompt_text_split[i] = start_token + prompt_text_split[i]
 
@@ -452,10 +455,10 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
         current_prompt_text: the prompt text of HISTORY context, converted from token_arr to text using tokenizer, in message level (List[str])
         """
 
-        for j in range(len(previous_ext_context)):
-            vllm_token_array = split_prompt_token_ids[j]
+        for j in range(len(previous_ext_context)):  # pylint: disable=consider-using-enumerate
+            token_array = split_prompt_token_ids[j]
             tracker_token_array = previous_ext_context[j].token_arr
-            if vllm_token_array == tracker_token_array:
+            if token_array == tracker_token_array:
                 # good, everything is perfect
                 continue
             else:
@@ -465,13 +468,13 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                     {
                         "expected_prompt_text": prompt_text_split[j],       # from llm_output["prompt_text"], converted directly from messages using apply_chat_template, passway (messages->apply_chat_template->text)
                         "current_prompt_text": current_prompt_text[j],      # history prompt text converted from token_arr to text using tokenizer, passway (messages->extended_message->incremental apply_chat_template->token_arr->text)
-                        "expected_token_ids": vllm_token_array,             # from llm_output["prompt_token_ids"], passway (messages->apply_chat_template->token)
+                        "expected_token_ids": token_array,             # from llm_output["prompt_token_ids"], passway (messages->apply_chat_template->token)
                         "current_token_ids": tracker_token_array,           # from previous_ext_context[j].token_arr, passway (messages->extended_message->incremental apply_chat_template->token_arr)
                     },
                     mod="exception",
-                    header="Prompt token ids mismatch (fixing drift by `token_arr=vllm_token_array`).",
+                    header="Prompt token ids mismatch (fixing drift by `token_arr=token_array`).",
                 )
-                previous_ext_context[j].token_arr = vllm_token_array
+                previous_ext_context[j].token_arr = token_array
         return previous_ext_context
 
     def process_reward(self, reward_structure: Reward):

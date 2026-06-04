@@ -75,22 +75,6 @@ def run_ppo(config: DictConfig, task_runner_class=None) -> None:
             runtime_env_vars["TRANSFER_QUEUE_ENABLE"] = "1"
             runtime_env_kwargs["env_vars"] = runtime_env_vars
 
-        allow_broadcast_env = ["HF_", "NVTE_", "CUDA_", "WANDB_", "TIKTOKEN_", "NCCL_", "VLLM_", "SGLANG_", "TORCH_"]
-        default_env_vars = {
-            key: value for key, value in os.environ.items()
-            if any(key.startswith(prefix) for prefix in allow_broadcast_env)
-        }
-        if "env_vars" not in runtime_env_kwargs:
-            runtime_env_kwargs["env_vars"] = {
-                "TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "WARN",
-                "VLLM_LOGGING_LEVEL": "WARN", **default_env_vars
-            }
-        else:
-            runtime_env_kwargs["env_vars"].update({
-                "TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "WARN",
-                "VLLM_LOGGING_LEVEL": "WARN", **default_env_vars
-            })
-
         runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)
         ray_init_kwargs = OmegaConf.create({**ray_init_kwargs, "runtime_env": runtime_env})
         print(f"ray init kwargs: {ray_init_kwargs}")

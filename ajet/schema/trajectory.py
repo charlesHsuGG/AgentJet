@@ -1,8 +1,8 @@
 from typing import Any, Dict, List, Union
 
 import numpy as np
-from pydantic import BaseModel, Field
 from loguru import logger
+from pydantic import BaseModel, Field
 
 
 class Reward(BaseModel):
@@ -72,6 +72,7 @@ class Sample(BaseModel):
     max_prompt_len: int = -1
     max_response_len: int = -1
     step_reward: float = 0.0
+    reward_extra: Dict[str, Any] = {}
     reference_advantage: float = 0.0
 
     def __init__(self, tracker_tokenized: dict, messages, config, **kwargs):
@@ -103,6 +104,8 @@ class Sample(BaseModel):
 
         self.reference_advantage = tracker_tokenized["reference_advantage"]
         self.step_reward = tracker_tokenized["step_reward"]
+
+        self.reward_extra = tracker_tokenized["reward_extra"]
 
         self.messages = messages
 

@@ -36,7 +36,7 @@ ajet:
     multi_turn:
       max_sample_per_task: 30
       max_steps: 30
-    n_vllm_engine: 2
+    n_inference_engine: 2
 
   debug:
     debug_max_parallel: 1

@@ -23,7 +23,6 @@ ajet:
     # punish the LLM when it is detected as lost control
     agent_madness_reward: 0.0
 
-
   task_reader:
     type: random_dummy # `env_service` or `jsonl_dataset_file` or `huggingface_dat_repo` or `data_generation` or `random_dummy`
 

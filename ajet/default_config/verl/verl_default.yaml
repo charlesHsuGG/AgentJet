@@ -28,13 +28,13 @@ actor_rollout_ref:
       zero_indexed_step: true
       warmup_style: null
       override_optimizer_config: null
-      grad_clip: null
+      clip_grad: 1.0
     fsdp_config:
       _target_: verl.workers.config.FSDPEngineConfig
       wrap_policy:
         min_num_params: 0
-      param_offload: true
-      optimizer_offload: true
+      param_offload: false
+      optimizer_offload: false
       offload_policy: false
       reshard_after_forward: true
       fsdp_size: -1
@@ -65,12 +65,12 @@ actor_rollout_ref:
     _target_: verl.workers.config.FSDPActorConfig
     rollout_n: ${oc.select:actor_rollout_ref.rollout.n,1}
     strategy: fsdp
-    ppo_mini_batch_size: 16
+    ppo_mini_batch_size: 256
     # loss_extra_scale_ratio: 1.0
     # override_ppo_mini_batch_num: 1 # special in agentjet
     ppo_micro_batch_size: null
     ppo_micro_batch_size_per_gpu: null
-    use_dynamic_bsz: true
+    use_dynamic_bsz: false
     ppo_max_token_len_per_gpu: 16384
     clip_ratio: 0.2
     clip_ratio_low: 0.2
@@ -87,12 +87,11 @@ actor_rollout_ref:
       kl_cov_ratio: 0.0002
       ppo_kl_coef: 0.1
     clip_ratio_c: 3.0
-    loss_agg_mode: seq-mean-token-mean
+    loss_agg_mode: token-mean
     loss_scale_factor: null
-    global_batch_info: {}
     entropy_coeff: 0
     calculate_entropy: false
-    use_kl_loss: true
+    use_kl_loss: false
     use_prefix_grouper: false
     use_torch_compile: true
     kl_loss_coef: 0.001
@@ -143,7 +142,7 @@ actor_rollout_ref:
       distillation_add_tail: true
       alpha: 0.5
       success_reward_threshold: 0.5
-      teacher_regularization: ema
+      teacher_regularization: none
       teacher_update_rate: null
       ema_update_rate: 0.05
       max_reprompt_len: 10240
@@ -180,7 +179,7 @@ actor_rollout_ref:
     ulysses_sequence_parallel_size: 1
     entropy_from_logits_with_chunking: false
     entropy_checkpointing: false
-    use_remove_padding: true
+    use_remove_padding: ${oc.select:actor_rollout_ref.model.use_remove_padding,false}
     calculate_sum_pi_squared: false
     sum_pi_squared_checkpointing: false
     qat:
@@ -198,8 +197,8 @@ actor_rollout_ref:
     strategy: ${actor_rollout_ref.actor.strategy}
     use_torch_compile: ${oc.select:actor_rollout_ref.actor.use_torch_compile,true}
     log_prob_micro_batch_size: null
-    log_prob_micro_batch_size_per_gpu: 1
-    log_prob_use_dynamic_bsz: true
+    log_prob_micro_batch_size_per_gpu: null
+    log_prob_use_dynamic_bsz: ${oc.select:actor_rollout_ref.actor.use_dynamic_bsz,false}
     log_prob_max_token_len_per_gpu: ${oc.select:actor_rollout_ref.actor.ppo_max_token_len_per_gpu,16384}
     profiler:
       _target_: verl.utils.profiler.ProfilerConfig
@@ -235,8 +234,8 @@ actor_rollout_ref:
       _target_: verl.workers.config.FSDPEngineConfig
       wrap_policy:
         min_num_params: 0
-      param_offload: true
-      optimizer_offload: true
+      param_offload: false
+      optimizer_offload: false
       offload_policy: false
       reshard_after_forward: true
       fsdp_size: -1
@@ -269,7 +268,7 @@ actor_rollout_ref:
     entropy_checkpointing: false
   rollout:
     _target_: verl.workers.config.RolloutConfig
-    name: sglang
+    name: ???
     mode: async
     nnodes: 0
     n_gpus_per_node: ${oc.select:trainer.n_gpus_per_node,8}
@@ -279,26 +278,26 @@ actor_rollout_ref:
     prompt_length: ${oc.select:data.max_prompt_length,512}
     response_length: ${oc.select:data.max_response_length,512}
     dtype: bfloat16
-    gpu_memory_utilization: 0.85
+    gpu_memory_utilization: 0.5
     ignore_eos: false
-    enforce_eager: true
+    enforce_eager: false
     cudagraph_capture_sizes: null
     free_cache_engine: true
-    tensor_model_parallel_size: 1
+    tensor_model_parallel_size: 2
     data_parallel_size: 1
     expert_parallel_size: 1
     pipeline_model_parallel_size: 1
     max_num_batched_tokens: 8192
     max_model_len: null
-    max_num_seqs: 64
-    enable_chunked_prefill: false
-    enable_prefix_caching: false
+    max_num_seqs: 1024
+    enable_chunked_prefill: true
+    enable_prefix_caching: true
     logprobs_mode: processed_logprobs
     scheduling_policy: fcfs
-    load_format: auto
+    load_format: dummy
     log_prob_micro_batch_size: null
-    log_prob_micro_batch_size_per_gpu: 1
-    log_prob_use_dynamic_bsz: true
+    log_prob_micro_batch_size_per_gpu: null
+    log_prob_use_dynamic_bsz: ${oc.select:actor_rollout_ref.actor.use_dynamic_bsz,false}
     log_prob_max_token_len_per_gpu: ${oc.select:actor_rollout_ref.actor.ppo_max_token_len_per_gpu,16384}
     disable_log_stats: true
     do_sample: true
@@ -336,7 +335,7 @@ actor_rollout_ref:
     calculate_log_probs: false
     agent:
       _target_: verl.workers.config.AgentLoopConfig
-      num_workers: 1
+      num_workers: 8
       default_agent_loop: single_turn_agent
       agent_loop_config_path: null
       custom_async_server:
@@ -346,7 +345,7 @@ actor_rollout_ref:
     checkpoint_engine:
       _target_: verl.workers.config.CheckpointEngineConfig
       backend: naive
-      update_weights_bucket_megabytes: 4096
+      update_weights_bucket_megabytes: 2048
       engine_kwargs: {}
     trace:
       _target_: verl.workers.config.TraceConfig
@@ -357,7 +356,7 @@ actor_rollout_ref:
       max_samples_per_step_per_worker: null
     skip_rollout: false
     skip_dump_dir: /tmp/rollout_dump
-    skip_tokenizer_init: false
+    skip_tokenizer_init: true
     enable_rollout_routing_replay: false
     profiler:
       _target_: verl.utils.profiler.ProfilerConfig
@@ -486,7 +485,7 @@ critic:
     zero_indexed_step: true
     warmup_style: null
     override_optimizer_config: null
-    grad_clip: null
+    clip_grad: 1.0
   model:
     fsdp_config:
       _target_: verl.workers.config.FSDPEngineConfig
@@ -543,7 +542,7 @@ critic:
   ppo_mini_batch_size: ${oc.select:actor_rollout_ref.actor.ppo_mini_batch_size,256}
   ppo_micro_batch_size: null
   ppo_micro_batch_size_per_gpu: ${oc.select:.ppo_micro_batch_size,null}
-  use_dynamic_bsz: true
+  use_dynamic_bsz: ${oc.select:actor_rollout_ref.actor.use_dynamic_bsz,false}
   ppo_max_token_len_per_gpu: 32768
   forward_max_token_len_per_gpu: ${.ppo_max_token_len_per_gpu}
   ppo_epochs: ${oc.select:actor_rollout_ref.actor.ppo_epochs,1}
@@ -633,7 +632,7 @@ sandbox_fusion:
   max_concurrent: null
   memory_limit_mb: null
 reward:
-  num_workers: 0
+  num_workers: 8
   custom_reward_function:
     path: null
     name: compute_score
@@ -653,15 +652,15 @@ reward:
     model_path: null
     rollout:
       _target_: verl.workers.config.RolloutConfig
-      name: sglang
+      name: ???
       dtype: bfloat16
-      gpu_memory_utilization: 0.85
-      enforce_eager: false
+      gpu_memory_utilization: 0.5
+      enforce_eager: true
       cudagraph_capture_sizes: null
       free_cache_engine: true
       data_parallel_size: 1
       expert_parallel_size: 1
-      tensor_model_parallel_size: 1
+      tensor_model_parallel_size: 2
       max_num_batched_tokens: 8192
       max_model_len: null
       max_num_seqs: 1024
@@ -690,7 +689,7 @@ algorithm:
   _target_: verl.trainer.config.AlgoConfig
   gamma: 1.0
   lam: 1.0
-  adv_estimator: grpo
+  adv_estimator: gae
   norm_adv_by_std_in_grpo: true
   use_kl_in_reward: false
   kl_penalty: kl

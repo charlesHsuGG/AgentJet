@@ -151,7 +151,7 @@ def align_parameters(from_config_fp, to_config_fp, convertion_json_fg, backbone)
     for from_key, to_keys in convertion_json.items():
         if from_key.startswith("("):
             # special argument that need A.S.T. computation
-            # e.g. "(min(ajet.rollout.max_env_worker, 128) // ajet.rollout.n_vllm_engine)": "explorer.runner_per_model"
+            # e.g. "(min(ajet.rollout.max_env_worker, 128) // ajet.rollout.n_inference_engine)": "explorer.runner_per_model"
             keys_array, config_computer = split_keys_and_operators(from_key, [])
             value = config_computer({k: _dive_to_fetch_value(from_config, k) for k in keys_array})
         else:
@@ -204,11 +204,11 @@ def align_parameter_safe_guard(config: dict, backbone: str) -> dict:
     if backbone == "trinity":
         train_batch_size = config["buffer"]["train_batch_size"]
         world_size = config["cluster"]["gpu_per_node"] * config["cluster"]["node_num"]
-        vllm_world_size = (
+        inference_world_size = (
             config["explorer"]["rollout_model"]["tensor_parallel_size"]
             * config["explorer"]["rollout_model"]["engine_num"]
         )
-        fsdp_world_size = world_size - vllm_world_size
+        fsdp_world_size = world_size - inference_world_size
 
         # if train_batch_size % fsdp_world_size != 0, train_batch_size + until divisible
         if fsdp_world_size > 0 and train_batch_size % fsdp_world_size != 0:

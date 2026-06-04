@@ -19,6 +19,7 @@ def get_sample_params(mode, config):
             temperature=config.ajet.rollout.temperature,
             top_p=config.ajet.rollout.top_p,
             logprobs=1,
+            extra_body={"top_k": config.ajet.rollout.top_k} if config.ajet.rollout.top_k is not None else {},  # Only include top_k if it's set
         )
     else:
         sampling_params = dict(
@@ -26,6 +27,7 @@ def get_sample_params(mode, config):
             max_new_tokens=config.ajet.rollout.max_response_length_in_one_turn,
             temperature=config.ajet.rollout.temperature,
             top_p=config.ajet.rollout.top_p,
+            extra_body={"top_k": config.ajet.rollout.top_k} if config.ajet.rollout.top_k is not None else {},  # Only include top_k if it's set
         )
 
     if mode == "validate":

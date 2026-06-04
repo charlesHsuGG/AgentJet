@@ -1,15 +1,14 @@
 
-from ajet.tuner import AjetTuner
+from ajet.context_tracker.multiagent_tracking import MultiAgentContextTracker
+from ajet.context_tracker.single_agent_tracking import \
+    SingleAgentContextTracker
 from ajet.schema.task import WorkflowOutput, WorkflowTask
-from ajet.context_tracker.multiagent_tracking import (
-    MultiAgentContextTracker,
-)
-from ajet.context_tracker.single_agent_tracking import SingleAgentContextTracker
-from ajet.schema.task import WorkflowTask
 from ajet.schema.trajectory import Reward
 from ajet.task_runner.base_runner import BaseAgentRunner
+from ajet.tuner import AjetTuner
 from ajet.utils.dynamic_import import dynamic_import
-from ajet.utils.metric_helper.reward_metric_helper import populate_reward_metadata_from_stats
+from ajet.utils.metric_helper.reward_metric_helper import \
+    populate_reward_metadata_from_stats
 
 
 class GeneralRunner(BaseAgentRunner):
@@ -73,6 +72,7 @@ class GeneralRunner(BaseAgentRunner):
             success_rate=1.0 if is_success else 0.0,
             madness=0,
             description="",
+            metadata=workflow_output.metadata
         )
 
         # Populate reward metadata with deep_finance reward stats if available

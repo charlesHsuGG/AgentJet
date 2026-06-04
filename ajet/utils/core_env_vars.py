@@ -24,7 +24,7 @@ def get_runtime_env(config, is_trinity: bool = False) -> dict:
         data_interchange_port = str(int(config.ajet.interchange_server.interchange_server_port))
     else:
         data_interchange_port = str(find_free_port())
-
+ 
     runtime_env = {
         "env_vars": {
             "NCCL_DEBUG": "WARN",
@@ -42,8 +42,8 @@ def get_runtime_env(config, is_trinity: bool = False) -> dict:
             # use ajet.backbone as plugin directory
             "TRINITY_PLUGIN_DIRS": str((Path(__file__).parent.parent / "backbone").resolve()),
             # "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "true",
-            "SWANLAB_API_KEY": os.getenv("SWANLAB_API_KEY", ""),
-            "SWANLAB_LOG_DIR": os.getenv("SWANLAB_LOG_DIR", "saved_experiments/swanlog"),
+            # "SWANLAB_API_KEY": os.getenv("SWANLAB_API_KEY", ""),
+            # "SWANLAB_LOG_DIR": os.getenv("SWANLAB_LOG_DIR", "saved_experiments/swanlog"),
             "AJET_CONFIG_REDIRECT": os.getenv("AJET_CONFIG_REDIRECT", ""),
             "AJET_DAT_INTERCHANGE_PORT": os.getenv("AJET_DAT_INTERCHANGE_PORT", data_interchange_port),
             "MASTER_NODE_IP": os.getenv("MASTER_NODE_IP", master_node_ip),
@@ -55,8 +55,8 @@ def get_runtime_env(config, is_trinity: bool = False) -> dict:
         "BEST_LOGGER_WEB_SERVICE_URL",
         "AJET_GIT_HASH",
         "AJET_REQ_TXT",
-        "SWANLAB_WEB_HOST",
-        "SWANLAB_API_HOST",
+        # "SWANLAB_WEB_HOST",
+        # "SWANLAB_API_HOST",
         "AJET_BENCHMARK_NAME",
         "FINANCE_MCP_URL",
         # API Keys for RM Gallery and other services
@@ -70,6 +70,13 @@ def get_runtime_env(config, is_trinity: bool = False) -> dict:
     for var in optional_env_vars:
         if os.getenv(var):
             runtime_env["env_vars"].update({var: os.getenv(var, "")})
+
+    allow_broadcast_env = ["HF_", "NVTE_", "CUDA_", "WANDB_", "TIKTOKEN_", "NCCL_", "VLLM_", "SGLANG_", "TORCH_"]
+    default_env_vars = {
+        key: value for key, value in os.environ.items()
+        if any(key.startswith(prefix) for prefix in allow_broadcast_env)
+    }
+    runtime_env["env_vars"].update(default_env_vars)
 
     if is_trinity:
         assert "AJET_CONFIG_REDIRECT" in runtime_env["env_vars"]

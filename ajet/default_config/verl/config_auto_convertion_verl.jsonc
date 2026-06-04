@@ -45,6 +45,7 @@
     "ajet.data.max_response_length": "data.max_response_length",
     "ajet.data.train_batch_size": "data.train_batch_size",
 
+    "ajet.rollout.name": "actor_rollout_ref.rollout.name",
     "ajet.rollout.max_model_len": [
         "actor_rollout_ref.rollout.max_model_len",
         "actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu",
@@ -62,6 +63,7 @@
         "actor_rollout_ref.actor.rollout_n",
         "actor_rollout_ref.rollout.n"
     ],
+    "ajet.rollout.engine_kwargs": "actor_rollout_ref.rollout.engine_kwargs",
 
     "ajet.model.path": "actor_rollout_ref.model.path",
     "ajet.project_name": "trainer.project_name",

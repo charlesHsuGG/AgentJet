@@ -19,19 +19,17 @@ import uuid
 from collections import defaultdict
 from copy import deepcopy
 from pprint import pprint
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import hydra
 import numpy as np
 import torch
 from beast_logger import print_dict
 from loguru import logger
-from torch.utils.data import Dataset, Sampler
 from tqdm import tqdm
 from verl import DataProto
 from verl.experimental.agent_loop.agent_loop import AsyncLLMServerManager
 from verl.experimental.dataset.sampler import AbstractCurriculumSampler
-from verl.single_controller.ray import RayWorkerGroup, ResourcePoolManager
 from verl.trainer.config import AlgoConfig
 from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
@@ -42,7 +40,7 @@ from verl.trainer.ppo.metric_utils import (compute_data_metrics,
 from verl.trainer.ppo.ray_trainer import (RayPPOTrainer, apply_kl_penalty,
                                           compute_response_mask)
 from verl.trainer.ppo.reward import extract_reward
-from verl.trainer.ppo.utils import Role, WorkerType
+from verl.trainer.ppo.utils import Role
 from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
@@ -60,7 +58,7 @@ from ajet.utils.metric_helper import (save_trajectory_as_json_file,
                                       update_metrics)
 
 
-def parse_reward_from_dataproto(data: DataProto) -> torch.Tensor:
+def parse_reward_from_dataproto(data: DataProto) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
     Reward scalar -> token-level reward tensor conversion.
     """
@@ -94,7 +92,9 @@ def parse_reward_from_dataproto(data: DataProto) -> torch.Tensor:
     assert len(data) == reward_tensor.shape[0]
     reward_tensor[torch.arange(reward_tensor.shape[0]), response_lengths - 1] = reward_scores
 
-    return reward_tensor
+    reward_extra_keys = data.meta_info.get("reward_extra_keys", [])
+    reward_extra_infos_dict = {key: data.non_tensor_batch[key] for key in reward_extra_keys}
+    return reward_tensor, reward_extra_infos_dict
 
 
 def compute_reward(data: DataProto) -> tuple[torch.Tensor, dict[str, Any]]:
@@ -106,8 +106,8 @@ def compute_reward(data: DataProto) -> tuple[torch.Tensor, dict[str, Any]]:
     Returns:
         Tuple of reward tensor and extra info dictionary.
     """
-    reward_tensor = parse_reward_from_dataproto(data)
-    return reward_tensor, {}
+    reward_tensor, reward_extra_infos_dict = parse_reward_from_dataproto(data)
+    return reward_tensor, reward_extra_infos_dict
 
 
 def union_gen_batch_via_task_id(tasks, batch: DataProto, gen_batch_output: DataProto, discard_original_batch=False):
@@ -401,32 +401,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
     """Distributed PPO trainer using Ray for scalable reinforcement learning.
     Slightly modified from RayPPOTrainer in verl.
     """
-
-    def __init__(
-        self,
-        config,
-        tokenizer,
-        role_worker_mapping: dict[Role, WorkerType],
-        resource_pool_manager: ResourcePoolManager,
-        ray_worker_group_cls: type[RayWorkerGroup] = RayWorkerGroup,
-        processor=None,
-        train_dataset: Optional[Dataset] = None,
-        val_dataset: Optional[Dataset] = None,
-        collate_fn=None,
-        train_sampler: Optional[Sampler] = None,
-        device_name=None,
-    ):
-        super().__init__(
-            config, tokenizer, role_worker_mapping, resource_pool_manager, ray_worker_group_cls, processor, train_dataset, val_dataset, collate_fn, train_sampler, device_name
-        )
-        if self.config.algorithm.adv_estimator == "sdpo":
-            self.config.algorithm.adv_estimator = "grpo"
-            self.config.actor_rollout_ref.actor.policy_loss.loss_mode = 'sdpo'
-
-        if self.config.algorithm.adv_estimator == "sdrlvr":
-            self.config.algorithm.adv_estimator = "grpo"
-            self.config.actor_rollout_ref.actor.policy_loss.loss_mode = 'sdpo'
-            self.config.actor_rollout_ref.actor.self_distillation.use_sdrlvr = True
 
     # #######################################
     # init
@@ -798,6 +772,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                             del rm_scores, gen_baseline_batch, gen_baseline_output
 
                     batch.batch["response_mask"] = compute_response_mask(batch)
+                    batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
@@ -886,17 +861,14 @@ class AjetRayPPOTrainer(RayPPOTrainer):
 
                     if self.use_reference_policy:
                         # compute reference log_prob
-                        with marked_timer("ref", timing_raw, color="olive"):
-                            if not self.ref_in_actor:
-                                ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
-                            else:
-                                ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
+                        with marked_timer(str(Role.RefPolicy), timing_raw, color="olive"):
+                            ref_log_prob = self._compute_ref_log_prob(batch)
                             batch = batch.union(ref_log_prob)
 
                     # compute values
                     if self.use_critic:
                         with marked_timer("values", timing_raw, color="cyan"):
-                            values = self.critic_wg.compute_values(batch)
+                            values = self._compute_values(batch)
                             batch = batch.union(values)
 
                     with marked_timer("adv", timing_raw, color="brown"):
@@ -987,9 +959,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         # 3. The current step number is a multiple of the save frequency.
                         # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
                         if self.config.trainer.save_freq > 0 and (
-                            is_last_step
-                            or self.global_steps % self.config.trainer.save_freq == 0
-                            or esi_close_to_expiration
+                            is_last_step or self.global_steps % self.config.trainer.save_freq == 0 or esi_close_to_expiration
                         ):
                             if esi_close_to_expiration:
                                 print("Force saving checkpoint: ESI instance expiration approaching.")
@@ -1010,8 +980,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
 
                 # validate
                 if (
-                    self.config.trainer.test_freq > 0
-                    and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
+                    self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
                     and (not self.config.ajet.enable_swarm_mode)
                 ):
                     with marked_timer("testing", timing_raw, color="green"):

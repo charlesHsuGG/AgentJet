@@ -8,7 +8,7 @@
     "ajet.trainer_common.optim.lr": "algorithm.optimizer.lr",
     "ajet.trainer_common.logger": "monitor.monitor_type",
     "ajet.trainer_common.checkpoint_base_dir": "checkpoint_root_dir",
-    "ajet.rollout.n_vllm_engine": "explorer.rollout_model.engine_num",
+    "ajet.rollout.n_inference_engine": "explorer.rollout_model.engine_num",
     "ajet.model.path": "model.model_path",
     "ajet.project_name": "project",
     "ajet.experiment_name": "name",
@@ -22,5 +22,5 @@
 
     "ajet.data.train_batch_size": "buffer.batch_size",
     "(ajet.data.train_batch_size * ajet.rollout.num_repeat * ajet.rollout.multi_turn.expected_steps)": "buffer.train_batch_size",
-    "(min(ajet.rollout.max_env_worker, 128) // ajet.rollout.n_vllm_engine)": "explorer.runner_per_model"
+    "(min(ajet.rollout.max_env_worker, 128) // ajet.rollout.n_inference_engine)": "explorer.runner_per_model"
 }

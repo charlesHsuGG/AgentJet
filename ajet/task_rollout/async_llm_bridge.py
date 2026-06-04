@@ -18,7 +18,8 @@ from ajet.schema.convertion import (
     convert_llm_proxy_response_to_agentscope_response,
     convert_llm_proxy_response_to_oai_response)
 from ajet.schema.logprob import TokenAndProb
-from ajet.utils.tokenizer import ajet_apply_chat_template
+
+# from ajet.utils.tokenizer import ajet_apply_chat_template
 
 if TYPE_CHECKING:
     try:
@@ -68,10 +69,7 @@ class AsyncLlmBridge(object):
 
     def get_llm_inference_fn_async(self, sampling_params: dict = {}) -> Callable:  # noqa: C901
 
-        async def llm_chat_verl(
-            messages: List[Dict[str, str]], custom_sampling_params: dict = {}, tools=[],
-            request_id: str = "",
-        ) -> dict:
+        async def llm_chat_verl(messages: List[Dict[str, str]], custom_sampling_params: dict = {}, tools=[], request_id: str = "") -> dict:
 
             updated_sampling_params = {}
             if sampling_params:
@@ -79,17 +77,17 @@ class AsyncLlmBridge(object):
             if custom_sampling_params:
                 updated_sampling_params.update(custom_sampling_params)
 
-            input_messages = copy.deepcopy(messages)
-            # the input (prompt) sequence as text
-            prompt_text = ajet_apply_chat_template(
-                tokenizer=self.tokenizer,
-                conversation=input_messages,
-                tools=tools,
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-            # the input (prompt) sequence as input_ids
-            prompt_token_ids = self.tokenizer(prompt_text)["input_ids"]
+            # input_messages = copy.deepcopy(messages)
+            # # the input (prompt) sequence as text
+            # prompt_text = ajet_apply_chat_template(
+            #     tokenizer=self.tokenizer,
+            #     conversation=input_messages,
+            #     tools=tools,
+            #     add_generation_prompt=True,
+            #     tokenize=False,
+            # )
+            # # the input (prompt) sequence as input_ids
+            # prompt_token_ids = self.tokenizer(prompt_text)["input_ids"]
 
             if "max_completion_tokens" not in updated_sampling_params:
                 updated_sampling_params["max_completion_tokens"] = self.config.ajet.rollout.max_response_length_in_one_turn
@@ -98,6 +96,8 @@ class AsyncLlmBridge(object):
 
             server_address = min(self.address_mapping, key=self.address_mapping.get)
             client = AsyncOpenAI(base_url=f"http://{server_address}/v1", api_key=os.environ.get("OPENAI_API_KEY", "token-abc123"))
+
+            logger.info(f"Sending request to server {server_address} with params: {updated_sampling_params}")
 
             if tools:
                 completion = await client.chat.completions.create(
@@ -116,12 +116,15 @@ class AsyncLlmBridge(object):
             message = completion.choices[0].message.model_dump(exclude_unset=True, exclude_none=True)
 
             token_logprobs = []
-            token_ids = completion.choices[0].token_ids if hasattr(completion.choices[0], "token_ids") else []
-            logprobs = completion.choices[0].logprobs.content if completion.choices[0].logprobs else []
-            if logprobs:
-                for i, logprob in enumerate(logprobs):
+            if completion.choices[0].logprobs:
+                resp_logprobs = completion.choices[0].logprobs.content
+                token_ids = completion.choices[0].token_ids if hasattr(completion.choices[0], "token_ids") else []
+                if not token_ids:
+                    token_ids = self.tokenizer([logprob.token for logprob in resp_logprobs], add_special_tokens=False)["input_ids"]
+
+                for i, logprob in enumerate(resp_logprobs):
                     token_logprobs.append(TokenAndProb(
-                        token_id=token_ids[i] if i < len(token_ids) else -100,
+                        token_id=token_ids[i],    # type: ignore
                         logprob=logprob.logprob,    # Warning: vllm logprob does not participant training (not reliable enough), for log only.
                         decoded_string=logprob.token,
                     ))
@@ -129,6 +132,11 @@ class AsyncLlmBridge(object):
             # sometimes tool use message has no content field
             if "content" not in message:
                 message["content"] = ""
+
+            logger.info(
+                f"Received response from server {server_address} with finish_reason: {completion.choices[0].finish_reason}, "
+                f"tool_calls: {message.get('tool_calls', [])}, content: {message['content'][:50]}..."
+            )
 
             usage = {
                 "prompt_tokens": completion.usage.prompt_tokens if completion.usage else None,
@@ -140,9 +148,9 @@ class AsyncLlmBridge(object):
                 "role": message["role"],
                 "request_id": request_id,
                 "content": message["content"],
-                "prompt_text": prompt_text,
-                "prompt_token_ids": prompt_token_ids,
-                "tool_calls": message.get("tool_calls", []),
+                # "prompt_text": prompt_text,
+                # "prompt_token_ids": prompt_token_ids,
+                "tool_calls": message.get("tool_calls", []) or [],
                 "finish_reason": completion.choices[0].finish_reason,
                 "usage": usage,
                 "tokens": token_logprobs,
@@ -263,8 +271,7 @@ class AsyncLlmBridge(object):
             return llm_chat_remote
         if self.llm_mode == "trinity":
             return llm_chat_trinity
-        else:
-            return llm_chat_verl
+        return llm_chat_verl
 
 
 # ----------------------------------------------------------------------------------------------

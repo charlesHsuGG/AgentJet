@@ -93,7 +93,7 @@ class ExtendedMessage:
         self.name = name    # preserved field, not used currently
         if not isinstance(self.tool_calls, list):
             # agent scope sometimes gives weird type for tool_calls, which is against OpenAI schema
-            self.tool_calls = list(self.tool_calls)
+            self.tool_calls = list(self.tool_calls or [])
         self.uuid = uuid.uuid4().hex
         self.build_from_uuid = build_from_uuid
         self.first_message = first_message
@@ -140,7 +140,7 @@ class ExtendedMessage:
     def auto_tokenize_non_first_message(self, tokenizer, tools):
         if self.before_last_query:
             # for example, this will remove the <thinking> block for qwen3's chat template
-            dummy_msg = [{"role": "assistant", "content": "dummy text"}]
+            dummy_msg = [{"role": "user", "content": "dummy text"}, {"role": "assistant", "content": "dummy text"}]
         else:
             dummy_msg = [{"role": "user", "content": "dummy text"}]
 

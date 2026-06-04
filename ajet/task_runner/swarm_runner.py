@@ -213,6 +213,7 @@ class SwarmRunner(BaseAgentRunner):
             success_rate=1.0 if is_success else 0.0,
             madness=0,
             description="",
+            metadata=workflow_output.metadata
         )
         # process reward
         context_tracker.process_reward(reward)
