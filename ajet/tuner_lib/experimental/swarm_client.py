@@ -37,6 +37,7 @@ WAIT_MORE_AVAIL_EPISODE_RETRY_DELAY = 2
 # agreement can stall the trainer's stop condition. Retries cover both
 # transport errors and server-side rejection (e.g. when a just-completed
 # end_episode hasn't yet propagated to the server's active list).
+AGREE_SYNC_WEIGHT_RETRY_MAX_TIMES = 3
 AGREE_SYNC_WEIGHT_RETRY_DELAY = 2.0
 DELAY_AFTER_AGREE_SYNC_WEIGHT = 30
 ENGINE_STATUS_POLL_INTERVAL = 5
@@ -111,6 +112,10 @@ def raise_for_status_with_detail(resp):
 
 
 class SwarmServerOfflineError(Exception):
+    ...
+
+
+class SwarmServerMaxRetryError(Exception):
     ...
 
 
@@ -367,8 +372,11 @@ class SwarmClientBase(object):
                     last_report = now
 
                 time.sleep(ENGINE_STATUS_POLL_INTERVAL)
-            except SwarmServerOfflineError:
-                raise
+            except SwarmServerOfflineError as swarm_err:
+                raise SwarmServerOfflineError(
+                    "Engine status is OFFLINE. This may indicate an error in the engine. "
+                    "Please check the swarm server logs for details."
+                ) from swarm_err
             except Exception as e:
                 logger.error(f"Error polling engine status: {e}")
                 time.sleep(ENGINE_STATUS_POLL_INTERVAL)
@@ -644,9 +652,12 @@ class SwarmClient(SwarmClientBase):
                         retry_delay = START_EPISODE_RETRY_DELAY
                         continue
 
-            except SwarmServerOfflineError:
+            except SwarmServerOfflineError as swarm_err:
                 # exit immediately without retrying when server is offline, to avoid flooding the logs with errors
-                raise
+                raise SwarmServerOfflineError(
+                    "Engine status is OFFLINE. This may indicate an error in the engine. "
+                    "Please check the swarm server logs for details."
+                ) from swarm_err
 
             except Exception as e:
 
@@ -1075,6 +1086,7 @@ class SwarmClient(SwarmClientBase):
         assert self._agentjet_job.swarm_mode_sample_collection_method in ["rollout_until_any_client_agree_sync_weight", "rollout_until_all_clients_agree_sync_weight"], \
             "agree_sync_weight is only applicable when swarm_mode_sample_collection_method is set to rollout_until_any_client_agree_sync_weight or rollout_until_all_clients_agree_sync_weight."
 
+        retry_times = 0
         while True:
             engine_status, _ = self.get_engine_status()
             if engine_status not in ("ENGINE.ROLLING", "ENGINE.ROLLING_POST"):
@@ -1098,12 +1110,18 @@ class SwarmClient(SwarmClientBase):
                     self._wait_until_status_change_to(desired_status_list=["ENGINE.ROLLING_POST", "ENGINE.WEIGHT_SYNCING"])
                     return True
                 logger.warning(f"agree_sync_weight rejected: {data.failure_reason}. Retrying in {AGREE_SYNC_WEIGHT_RETRY_DELAY}s...")
-            except SwarmServerOfflineError:
-                raise
+            except SwarmServerOfflineError as swarm_err:
+                raise SwarmServerOfflineError(
+                    "Engine status is OFFLINE. This may indicate an error in the engine. "
+                    "Please check the swarm server logs for details."
+                ) from swarm_err
             except Exception as e:
                 if self._should_refresh_client_on_error(e):
                     self._refresh_http_client()
                 logger.error(f"agree_sync_weight errored: {e}. Retrying in {AGREE_SYNC_WEIGHT_RETRY_DELAY}s...")
+            if retry_times > AGREE_SYNC_WEIGHT_RETRY_MAX_TIMES:
+                raise SwarmServerMaxRetryError("Failed to sync weight; retry limit exceeded.")
+            retry_times += 1
             time.sleep(AGREE_SYNC_WEIGHT_RETRY_DELAY)
 
     def get_rollout_stat(self) -> CurrentBatchRolloutPoolInformation:

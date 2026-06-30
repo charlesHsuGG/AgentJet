@@ -539,6 +539,7 @@ def register_enable_swarm_mode_routes(
         shared_mem_dict["engine_status"] = req.engine_status
         if previous_status in ["ENGINE.ROLLING", "ENGINE.ROLLING_POST"] and req.engine_status not in ["ENGINE.ROLLING", "ENGINE.ROLLING_POST"]:
             # _clean_up_engine_status(shared_mem_dict_lock, shared_mem_dict)
+            await asyncio.sleep(10)  # delay WEIGHT_SYNCING avoid async call bug
             await asyncio.to_thread(
                 _clean_up_engine_status,
                 shared_mem_dict_lock,

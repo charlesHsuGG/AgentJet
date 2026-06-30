@@ -204,7 +204,7 @@ class SwarmClientInstruction(BaseModel):
 
 # Active-client tracking timeout (seconds): a client falls off the active list
 # if it has done no chat-completion or begin_episode call within this window.
-CLIENT_ACTIVE_TIMEOUT = 10 * 60
+CLIENT_ACTIVE_TIMEOUT = 1 * 60 * 60
 
 
 # --------------------------------------------------------------------
@@ -269,7 +269,7 @@ DEBUG = False
 
 VERBOSE = True
 
-shared_http_client = httpx.Client(timeout=10.0)
+shared_http_client = httpx.Client(timeout=30.0)
 
 
 def get_master_node_ip() -> str:
