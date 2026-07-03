@@ -274,6 +274,7 @@ ajet:
     # algorithm setting
     algorithm:
       adv_estimator: grpo
+      loss_mode: vanilla
 
     # whether to subtract a KL penalty from the reward signal
     use_kl_in_reward: False
@@ -318,7 +319,7 @@ ajet:
     ppo_epochs: 1
 
     # loss = loss * loss_extra_scale_ratio
-    # loss_extra_scale_ratio: 1.0
+    loss_extra_scale_ratio: 1.0
 
     # Ulysses specific configs
     ulysses_sequence_parallel_size: 1

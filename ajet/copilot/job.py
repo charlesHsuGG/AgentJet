@@ -20,6 +20,14 @@ from ajet.utils.config_utils import (expand_ajet_hierarchical_config,
                                      read_ajet_hierarchical_config)
 from ajet.utils.dynamic_import import cls_to_path
 
+ALGORITHM_SUPPORTED = {
+    "ppo": {"adv_estimator": "gae", "loss_mode": "vanilla"},
+    "grpo": {"adv_estimator": "grpo", "loss_mode": "vanilla"},
+    "sdpo": {"adv_estimator": "grpo", "loss_mode": "sdpo"},
+    "sdrlvr": {"adv_estimator": "grpo", "loss_mode": "sdrlvr"},
+    "srpo": {"adv_estimator": "grpo", "loss_mode": "srpo"},
+}
+
 
 def override_current_yaml_value_if_given(override_value, current_value):
     if override_value is not None:
@@ -226,6 +234,11 @@ class AgentJetJob:
         self.inference_server_type: str = cast(str, inference_server_type)
         self.inference_config: dict = cast(dict, inference_config or {})
 
+        assert self.algorithm in ALGORITHM_SUPPORTED, f"Unsupported algorithm: {self.algorithm}. Supported algorithms: {list(ALGORITHM_SUPPORTED.keys())}"
+
+        self.adv_estimator: str = cast(str, ALGORITHM_SUPPORTED[self.algorithm]["adv_estimator"])
+        self.loss_mode: str = cast(str, ALGORITHM_SUPPORTED[self.algorithm]["loss_mode"])
+
         # see `ajet/default_config/ajet_swarm_default.yaml`
         overrides = {
             # left: [yaml key navigation]                  right: [AgentJetJob self attr]
@@ -236,7 +249,8 @@ class AgentJetJob:
             "ajet.model.path": "model",
             "ajet.trainer_common.n_gpus_per_node": "n_gpu",
             "ajet.trainer_common.nnodes": "nnodes",
-            "ajet.trainer_common.algorithm.adv_estimator": "algorithm",
+            "ajet.trainer_common.algorithm.adv_estimator": "adv_estimator",
+            "ajet.trainer_common.algorithm.loss_mode": "loss_mode",
             "ajet.rollout.num_repeat": "num_repeat",
             "ajet.data.train_batch_size": "batch_size",
             "ajet.enable_swarm_mode": "swarm_mode",

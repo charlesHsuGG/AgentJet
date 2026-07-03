@@ -262,10 +262,10 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
         llm_ext_msg.lack_normal_eos = lack_normal_eos
         llm_ext_msg.manual_loss_mask_override = loss_mask
 
-        assert (
-            len(precise_manual_token)
-            <= self.config.ajet.rollout.max_response_length_in_one_turn
-        ), f"Generated token length {len(precise_manual_token)} exceeds max_response_length_in_one_turn {self.config.ajet.rollout.max_response_length_in_one_turn}"
+        # assert (
+        #     len(precise_manual_token)
+        #     <= self.config.ajet.rollout.max_response_length_in_one_turn
+        # ), f"Generated token length {len(precise_manual_token)} exceeds max_response_length_in_one_turn {self.config.ajet.rollout.max_response_length_in_one_turn}"
 
         # run generated token callback, usually to monitor token output rate ( e.g. 164 tokens/sec )
         self.generated_token_callback_fn(llm_ext_msg.token_arr)

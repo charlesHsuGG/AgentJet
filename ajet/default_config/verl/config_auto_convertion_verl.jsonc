@@ -7,6 +7,7 @@
     "ajet.trainer_common.nnodes": "trainer.nnodes",
     "ajet.trainer_common.logger": "trainer.logger",
     "ajet.trainer_common.checkpoint_base_dir": "trainer.checkpoint_base_dir",
+    "ajet.trainer_common.algorithm.loss_mode": "actor_rollout_ref.actor.policy_loss.loss_mode",
     "ajet.trainer_common.algorithm.adv_estimator": "algorithm.adv_estimator",
     "ajet.trainer_common.use_kl_in_reward": "algorithm.use_kl_in_reward",
     "ajet.trainer_common.kl_penalty_type": "algorithm.kl_penalty",

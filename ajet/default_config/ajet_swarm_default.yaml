@@ -75,6 +75,7 @@ ajet:
     n_gpus_per_node: 8
     algorithm:
       adv_estimator: grpo
+      loss_mode: vanilla
 
 # ------------------ do not edit ------------------
 hydra:

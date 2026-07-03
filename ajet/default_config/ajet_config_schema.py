@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 @dataclass
 class AjetAlgorithm:
     adv_estimator: str = "grpo"
+    loss_mode: str = "vanilla"
 
 
 @dataclass
