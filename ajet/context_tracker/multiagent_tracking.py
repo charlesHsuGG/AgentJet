@@ -164,7 +164,7 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
             if msg["role"] == "user":
                 previous_message_encounter_user_role = True
 
-            any_later_msg_has_user_role = any((m["role"] == "user") for m in messages[i+1:])
+            user_last_query_flag = msg["role"] == "user" and not any((m["role"] == "user") for m in messages[i+1:])
 
             msg_content = cast(str, msg["content"])
 
@@ -181,7 +181,7 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                     token_generator="auto",
                     name=(msg["name"] if "name" in msg else ""),
                     first_message=(i == 0),
-                    before_last_query=any_later_msg_has_user_role
+                    before_last_query=user_last_query_flag,
                 )
             ]
             if ("<think>" in msg_content) and (not previous_message_encounter_user_role):

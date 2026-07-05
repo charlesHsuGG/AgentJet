@@ -708,10 +708,11 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         save_trajectory_as_json_file(context_tracker_arr, self.global_steps, self.config, prefix="train")
                         update_metrics(context_tracker_arr, metrics, prefix="train_")
                         if self.config.ajet.execute_test:  # apply a test probe
-                            from swanlab.data.run.main import get_run
+                            from swanlab.data.run.main import \
+                                get_run  # pylint: disable=import-outside-toplevel
 
                             from ajet.utils.testing_utils import \
-                                _test_if_test_mode
+                                _test_if_test_mode  # pylint: disable=import-outside-toplevel
 
                             run_info = get_run().public.json()  # type: ignore
                             data = {
@@ -734,8 +735,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     logger.info("rollout step end")
 
                     batch.non_tensor_batch["uid"] = np.array(
-                        [str(uuid.uuid4()) for _ in range(len(batch.batch))],
-                        dtype=object,
+                        [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object,
                     )
                     discard_original_batch = self.config.ajet.enable_swarm_mode
                     batch = union_gen_batch_via_task_id(tasks, batch, gen_batch_output, discard_original_batch)

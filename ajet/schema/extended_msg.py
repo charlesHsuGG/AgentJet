@@ -140,15 +140,17 @@ class ExtendedMessage:
     def auto_tokenize_non_first_message(self, tokenizer, tools):
         if self.before_last_query:
             # for example, this will remove the <thinking> block for qwen3's chat template
-            dummy_msg = [{"role": "user", "content": "dummy text"}, {"role": "assistant", "content": "dummy text"}]
+            dummy_msg = [
+                {"role": "user", "content": "dummy text"},
+                {"role": "assistant", "content": "dummy text"}
+            ]
         else:
             dummy_msg = [{"role": "user", "content": "dummy text"}]
 
         try:
             # completion_token_arr will contain generation_prompt header
             auto_tokenize_target: dict = {
-                "role": self.role,
-                "content": self.text_content_for_compare,
+                "role": self.role, "content": self.text_content_for_compare,
             }
             if self.tool_calls:
                 auto_tokenize_target.update({"tool_calls": self.tool_calls})
@@ -163,7 +165,7 @@ class ExtendedMessage:
         except Exception as e:
             raise ValueError(
                 f"Cannot tokenize {self.role} --- {self.text_content_for_compare}, \n\n Error: {e}"
-            )
+            ) from e
         self.token_arr, _ = self.get_inc_simple(
             text_frag_from=ajet_apply_chat_template(
                 tokenizer=tokenizer,

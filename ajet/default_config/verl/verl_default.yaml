@@ -33,8 +33,8 @@ actor_rollout_ref:
       _target_: verl.workers.config.FSDPEngineConfig
       wrap_policy:
         min_num_params: 0
-      param_offload: false
-      optimizer_offload: false
+      param_offload: true
+      optimizer_offload: true
       offload_policy: false
       reshard_after_forward: true
       fsdp_size: -1
@@ -45,11 +45,11 @@ actor_rollout_ref:
       seed: 42
       full_determinism: false
       ulysses_sequence_parallel_size: 1
-      entropy_from_logits_with_chunking: false
+      entropy_from_logits_with_chunking: true
       use_torch_compile: true
-      entropy_checkpointing: false
+      entropy_checkpointing: true
       forward_only: false
-      strategy: fsdp
+      strategy: fsdp2
       qat:
         _target_: verl.workers.config.QATEngineConfig
         enable: false
@@ -64,12 +64,12 @@ actor_rollout_ref:
     # _target_: ajet.backbone.verl.actor_config.AgentJetFSDPActorConfig
     _target_: verl.workers.config.FSDPActorConfig
     rollout_n: ${oc.select:actor_rollout_ref.rollout.n,1}
-    strategy: fsdp
-    ppo_mini_batch_size: 256
-    loss_extra_scale_ratio: 1.0
+    strategy: fsdp2
+    ppo_mini_batch_size: 1
+    loss_extra_scale_ratio: 20.0
     # override_ppo_mini_batch_num: 1 # special in agentjet
     ppo_micro_batch_size: null
-    ppo_micro_batch_size_per_gpu: null
+    ppo_micro_batch_size_per_gpu: 1
     use_dynamic_bsz: false
     ppo_max_token_len_per_gpu: 16384
     clip_ratio: 0.2
@@ -77,7 +77,7 @@ actor_rollout_ref:
     clip_ratio_high: 0.2
     tau_pos: 1.0
     tau_neg: 1.05
-    freeze_vision_tower: false
+    freeze_vision_tower: true
     policy_loss:
       _target_: verl.workers.config.PolicyLossConfig
       loss_mode: vanilla
@@ -91,10 +91,10 @@ actor_rollout_ref:
     loss_scale_factor: null
     entropy_coeff: 0
     calculate_entropy: false
-    use_kl_loss: false
+    use_kl_loss: true
     use_prefix_grouper: false
-    use_torch_compile: true
-    kl_loss_coef: 0.001
+    use_torch_compile: false
+    kl_loss_coef: 0.01
     kl_loss_type: low_var_kl
     ppo_epochs: 1
     shuffle: false
@@ -141,31 +141,32 @@ actor_rollout_ref:
       distillation_add_tail: true
       alpha: 0.5
       success_reward_threshold: 0.5
-      teacher_regularization: none
+      teacher_regularization: ema
       teacher_update_rate: null
       ema_update_rate: 0.05
-      max_reprompt_len: 10240
+      max_reprompt_len: 8192
       reprompt_truncation: right
       dont_reprompt_on_self_success: true
       remove_thinking_from_demonstration: true
       include_environment_feedback: true
       environment_feedback_only_without_solution: true
       is_clip: 2
-      sdrlvr_clip_ratio_low: -20.0
-      sdrlvr_clip_ratio_high: 20.0
-      reprompt_template: '{prompt}{solution}{feedback}
+      reprompt_template: '
 
+        用戶原始問題:
 
-        Correctly solve the original question.'
+        {prompt}{solution}{feedback}
+
+        請依據環境反饋以及正確答案來回答問題。'
       solution_template: '
 
-        Correct solution:
+        正確答案:
 
 
         {successful_previous_attempt}'
       feedback_template: '
 
-        The following is feedback from your unsuccessful earlier attempt:
+        之前不成功的回答產生的環境反饋:
 
 
         {feedback_raw}'
@@ -176,8 +177,8 @@ actor_rollout_ref:
       replay_file: null
     grad_clip: 1.0
     ulysses_sequence_parallel_size: 1
-    entropy_from_logits_with_chunking: false
-    entropy_checkpointing: false
+    entropy_from_logits_with_chunking: true
+    entropy_checkpointing: true
     use_remove_padding: ${oc.select:actor_rollout_ref.model.use_remove_padding,false}
     calculate_sum_pi_squared: false
     sum_pi_squared_checkpointing: false
@@ -196,7 +197,7 @@ actor_rollout_ref:
     strategy: ${actor_rollout_ref.actor.strategy}
     use_torch_compile: ${oc.select:actor_rollout_ref.actor.use_torch_compile,true}
     log_prob_micro_batch_size: null
-    log_prob_micro_batch_size_per_gpu: null
+    log_prob_micro_batch_size_per_gpu: 1
     log_prob_use_dynamic_bsz: ${oc.select:actor_rollout_ref.actor.use_dynamic_bsz,false}
     log_prob_max_token_len_per_gpu: ${oc.select:actor_rollout_ref.actor.ppo_max_token_len_per_gpu,16384}
     profiler:
@@ -234,7 +235,7 @@ actor_rollout_ref:
       wrap_policy:
         min_num_params: 0
       param_offload: false
-      optimizer_offload: false
+      optimizer_offload: true
       offload_policy: false
       reshard_after_forward: true
       fsdp_size: -1
@@ -245,11 +246,11 @@ actor_rollout_ref:
       seed: 42
       full_determinism: false
       ulysses_sequence_parallel_size: 1
-      entropy_from_logits_with_chunking: false
+      entropy_from_logits_with_chunking: true
       use_torch_compile: true
-      entropy_checkpointing: false
+      entropy_checkpointing: true
       forward_only: true
-      strategy: fsdp
+      strategy: fsdp2
       qat:
         _target_: verl.workers.config.QATEngineConfig
         enable: false
@@ -263,8 +264,8 @@ actor_rollout_ref:
         quantization_config_path: null
     _target_: verl.workers.config.FSDPActorConfig
     ulysses_sequence_parallel_size: ${oc.select:actor_rollout_ref.actor.ulysses_sequence_parallel_size,1}
-    entropy_from_logits_with_chunking: false
-    entropy_checkpointing: false
+    entropy_from_logits_with_chunking: true
+    entropy_checkpointing: true
   rollout:
     _target_: verl.workers.config.RolloutConfig
     name: ???
@@ -282,7 +283,7 @@ actor_rollout_ref:
     enforce_eager: false
     cudagraph_capture_sizes: null
     free_cache_engine: true
-    tensor_model_parallel_size: 2
+    tensor_model_parallel_size: 1
     data_parallel_size: 1
     expert_parallel_size: 1
     pipeline_model_parallel_size: 1
@@ -290,12 +291,12 @@ actor_rollout_ref:
     max_model_len: null
     max_num_seqs: 1024
     enable_chunked_prefill: true
-    enable_prefix_caching: true
+    enable_prefix_caching: false
     logprobs_mode: processed_logprobs
     scheduling_policy: fcfs
-    load_format: dummy
+    load_format: safetensors
     log_prob_micro_batch_size: null
-    log_prob_micro_batch_size_per_gpu: null
+    log_prob_micro_batch_size_per_gpu: 1
     log_prob_use_dynamic_bsz: ${oc.select:actor_rollout_ref.actor.use_dynamic_bsz,false}
     log_prob_max_token_len_per_gpu: ${oc.select:actor_rollout_ref.actor.ppo_max_token_len_per_gpu,16384}
     disable_log_stats: true
@@ -315,7 +316,8 @@ actor_rollout_ref:
       'n': 1
       do_sample: false
     multi_turn:
-      _target_: ajet.backbone.verl.multiturn_config.AjetMultiTurnConfig
+      # _target_: ajet.backbone.verl.multiturn_config.AjetMultiTurnConfig
+      _target_: verl.workers.config.MultiTurnConfig
       enable: false
       max_assistant_turns: null
       tool_config_path: null
@@ -334,7 +336,7 @@ actor_rollout_ref:
     calculate_log_probs: false
     agent:
       _target_: verl.workers.config.AgentLoopConfig
-      num_workers: 8
+      num_workers: 1
       default_agent_loop: single_turn_agent
       agent_loop_config_path: null
       custom_async_server:
@@ -344,7 +346,7 @@ actor_rollout_ref:
     checkpoint_engine:
       _target_: verl.workers.config.CheckpointEngineConfig
       backend: naive
-      update_weights_bucket_megabytes: 2048
+      update_weights_bucket_megabytes: 6144
       engine_kwargs: {}
     trace:
       _target_: verl.workers.config.TraceConfig
@@ -355,7 +357,7 @@ actor_rollout_ref:
       max_samples_per_step_per_worker: null
     skip_rollout: false
     skip_dump_dir: /tmp/rollout_dump
-    skip_tokenizer_init: true
+    skip_tokenizer_init: false
     enable_rollout_routing_replay: false
     profiler:
       _target_: verl.utils.profiler.ProfilerConfig
@@ -448,7 +450,7 @@ data:
   dataloader_num_workers: 8
   image_patch_size: 14
   validation_shuffle: false
-  filter_overlong_prompts: false
+  filter_overlong_prompts: true
   filter_overlong_prompts_workers: 1
   truncation: error
   image_key: images
@@ -491,7 +493,7 @@ critic:
       wrap_policy:
         min_num_params: 0
       param_offload: false
-      optimizer_offload: false
+      optimizer_offload: true
       offload_policy: false
       reshard_after_forward: true
       fsdp_size: -1
@@ -502,10 +504,10 @@ critic:
       seed: 42
       full_determinism: false
       ulysses_sequence_parallel_size: 1
-      entropy_from_logits_with_chunking: false
+      entropy_from_logits_with_chunking: true
       use_torch_compile: true
-      strategy: fsdp
-      entropy_checkpointing: false
+      strategy: fsdp2
+      entropy_checkpointing: true
       forward_only: false
       qat:
         _target_: verl.workers.config.QATEngineConfig
@@ -527,7 +529,7 @@ critic:
     use_shm: false
     enable_gradient_checkpointing: true
     enable_activation_offload: false
-    use_remove_padding: false
+    use_remove_padding: true
     lora_rank: 0
     lora_alpha: 16
     target_modules: all-linear
@@ -536,11 +538,11 @@ critic:
       num_shards: 4
   _target_: verl.workers.config.FSDPCriticConfig
   rollout_n: ${oc.select:actor_rollout_ref.rollout.n,1}
-  strategy: fsdp
+  strategy: fsdp2
   enable: null
   ppo_mini_batch_size: ${oc.select:actor_rollout_ref.actor.ppo_mini_batch_size,256}
   ppo_micro_batch_size: null
-  ppo_micro_batch_size_per_gpu: ${oc.select:.ppo_micro_batch_size,null}
+  ppo_micro_batch_size_per_gpu: 1
   use_dynamic_bsz: ${oc.select:actor_rollout_ref.actor.use_dynamic_bsz,false}
   ppo_max_token_len_per_gpu: 32768
   forward_max_token_len_per_gpu: ${.ppo_max_token_len_per_gpu}
@@ -651,15 +653,15 @@ reward:
     model_path: null
     rollout:
       _target_: verl.workers.config.RolloutConfig
-      name: ???
+      name: sglang
       dtype: bfloat16
       gpu_memory_utilization: 0.5
-      enforce_eager: true
+      enforce_eager: false
       cudagraph_capture_sizes: null
       free_cache_engine: true
       data_parallel_size: 1
       expert_parallel_size: 1
-      tensor_model_parallel_size: 2
+      tensor_model_parallel_size: 1
       max_num_batched_tokens: 8192
       max_model_len: null
       max_num_seqs: 1024
@@ -688,7 +690,7 @@ algorithm:
   _target_: verl.trainer.config.AlgoConfig
   gamma: 1.0
   lam: 1.0
-  adv_estimator: gae
+  adv_estimator: grpo
   norm_adv_by_std_in_grpo: true
   use_kl_in_reward: false
   kl_penalty: kl
