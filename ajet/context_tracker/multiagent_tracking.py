@@ -168,11 +168,14 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
 
             msg_content = cast(str, msg["content"])
 
+            assert msg_content or msg["tool_calls"], f"Message content or tool_calls is None. Message: {msg}"
+
             # extract content block from openai-competible messages and convert to ExtendedMessage
             timeline += [
                 ExtendedMessage(
                     author=author,
                     role=msg["role"],
+                    reasoning_content=(msg["reasoning_content"] if "reasoning_content" in msg else None),
                     content=msg_content,
                     tokenizer=self.tokenizer,
                     tools=tools,

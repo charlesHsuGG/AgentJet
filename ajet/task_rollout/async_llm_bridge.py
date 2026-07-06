@@ -89,9 +89,6 @@ class AsyncLlmBridge(object):
             # # the input (prompt) sequence as input_ids
             # prompt_token_ids = self.tokenizer(prompt_text)["input_ids"]
 
-            if "max_completion_tokens" not in updated_sampling_params:
-                updated_sampling_params["max_completion_tokens"] = self.config.ajet.rollout.max_response_length_in_one_turn
-
             updated_sampling_params.update({"logprobs": 1, "return_token_ids": True, "return_tokens_as_token_ids": True})
 
             server_address = min(self.address_mapping, key=self.address_mapping.get)
@@ -147,6 +144,7 @@ class AsyncLlmBridge(object):
             return {
                 "role": message["role"],
                 "request_id": request_id,
+                "reasoning_content": message.get("reasoning_content", None),
                 "content": message["content"],
                 # "prompt_text": prompt_text,
                 # "prompt_token_ids": prompt_token_ids,

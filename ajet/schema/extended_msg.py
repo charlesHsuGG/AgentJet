@@ -63,6 +63,7 @@ class ExtendedMessage:
         self,
         author,
         role="assistant",
+        reasoning_content=None,
         content="",
         token_arr=[],
         token_begin_index=-1,
@@ -80,6 +81,7 @@ class ExtendedMessage:
     ):
         self.author = author
         self.role = role
+        self.reasoning_content = reasoning_content
         self.content = content
         self.token_arr = token_arr
         self.token_logprob_arr = token_logprob_arr
@@ -102,7 +104,7 @@ class ExtendedMessage:
 
         # text content to compare when timeline merging
         self._text_content_for_compare = ""
-        self.generate_content_for_compare(content=self.content)
+        self.generate_content_for_compare(reasoning_content=self.reasoning_content, content=self.content)
 
         self.eos_token_id = tokenizer.eos_token_id
 
@@ -125,10 +127,12 @@ class ExtendedMessage:
         else:
             auto_tokenize_target: dict = {
                 "role": self.role,
-                "content": self.text_content_for_compare,
+                "content": self.content,
             }
             if self.tool_calls:
                 auto_tokenize_target.update({"tool_calls": self.tool_calls})
+            if self.reasoning_content:
+                auto_tokenize_target.update({"reasoning_content": self.reasoning_content})
             self.token_arr = ajet_apply_chat_template(
                 tokenizer=tokenizer,
                 conversation=[auto_tokenize_target],
@@ -150,8 +154,10 @@ class ExtendedMessage:
         try:
             # completion_token_arr will contain generation_prompt header
             auto_tokenize_target: dict = {
-                "role": self.role, "content": self.text_content_for_compare,
+                "role": self.role, "content": self.content,
             }
+            if self.reasoning_content:
+                auto_tokenize_target.update({"reasoning_content": self.reasoning_content})
             if self.tool_calls:
                 auto_tokenize_target.update({"tool_calls": self.tool_calls})
             if self.tool_call_id:
@@ -164,7 +170,7 @@ class ExtendedMessage:
             )
         except Exception as e:
             raise ValueError(
-                f"Cannot tokenize {self.role} --- {self.text_content_for_compare}, \n\n Error: {e}"
+                f"Cannot tokenize {self.role} --- {self.content}, \n\n Error: {e}"
             ) from e
         self.token_arr, _ = self.get_inc_simple(
             text_frag_from=ajet_apply_chat_template(
@@ -182,7 +188,13 @@ class ExtendedMessage:
     def text_content_for_compare(self):
         if self._text_content_for_compare == "":
             if not self.tool_calls:
-                logger.exception("text_content_for_compare is not set, or previous llm output is empty!")
+                logger.exception(
+                    "text_content_for_compare is not set, or previous llm output is empty!"
+                    f" | author={self.author} role={self.role} uuid={self.uuid} | "
+                    f"content_preview={self.content[:100]!r}"
+                    f"reasoning_content_preview={self.reasoning_content[:100] if self.reasoning_content else ""!r}"
+                    f"tool_calls={self.tool_calls}"
+                )
         return self._text_content_for_compare
 
     @property
@@ -194,8 +206,11 @@ class ExtendedMessage:
         ), f"author {self.author} is not identified"
         return self.author in NEED_TRAIN_AUTHORS
 
-    def generate_content_for_compare(self, content):
-        self._text_content_for_compare = content
+    def generate_content_for_compare(self, reasoning_content, content):
+        if reasoning_content:
+            self._text_content_for_compare = "<think>\n" + reasoning_content + "\n</think>\n" + content
+        else:
+            self._text_content_for_compare = content
 
     def get_loss_mask(self, blackout_token_combo):
         if self.need_training:
@@ -326,9 +341,20 @@ class ExtendedMessage:
             # a dummy msg, not necessary, can be []
             dummy_msg = [{"role": "user", "content": "dummy text"}]
             # re-compute token_arr
-            auto_tokenize_targets = [
-                {"role": msg.role, "content": msg.text_content_for_compare} for msg in group
-            ]
+            auto_tokenize_targets = []
+            for msg in group:
+                auto_tokenize_target = {
+                    "role": msg.role,
+                    "content": msg.content,
+                }
+                if msg.reasoning_content:
+                    auto_tokenize_target.update({"reasoning_content": msg.reasoning_content})
+                if msg.tool_calls:
+                    auto_tokenize_target.update({"tool_calls": msg.tool_calls})
+                if msg.tool_call_id:
+                    auto_tokenize_target.update({"tool_call_id": msg.tool_call_id})
+                auto_tokenize_targets.append(auto_tokenize_target)
+
             merged.token_arr, _ = merged.get_inc_simple(
                 text_frag_from=ajet_apply_chat_template(
                     tokenizer=tokenizer,
