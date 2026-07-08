@@ -294,8 +294,9 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
         Mirrors the body of the same name that lived inline in `chat_completions`,
         so the behaviour of both endpoints stays identical.
         """
+        from ajet.tuner_lib.experimental.interchange_utils import \
+            _refresh_client_activity
         from ajet.tuner_lib.experimental.swarm_server import ep_key
-        from ajet.tuner_lib.experimental.interchange_utils import _refresh_client_activity
         assert shared_mem_dict is not None
         assert shared_mem_dict_lock is not None
 
@@ -394,10 +395,8 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
         chunked into the SSE event sequence the OpenAI SDK expects.
         """
         from ajet.tuner_lib.experimental.oai_responses_adapter import (
-            build_chat_completion_request,
-            chat_completion_to_responses_dict,
-            iter_responses_sse_events,
-        )
+            build_chat_completion_request, chat_completion_to_responses_dict,
+            iter_responses_sse_events)
 
         agent_name, target_tag, episode_uuid, episode_address = _parse_authorization_header(authorization)
 
@@ -650,6 +649,8 @@ def start_interchange_server(config, blocking=False, env={}) -> int:
     master_node_ip = get_host_ip(os.environ.get("NETWORK_INTERFACE", None))
     host_url = f"http://{master_node_ip}:{port}"
     os.environ["MASTER_NODE_IP"] = str(master_node_ip)
+
+    logger.info(f"Interchange server subprocess started on host: {master_node_ip}, port {port}. Waiting for it to be ready...")
 
     # polling for server ready
     start_time = time.time()
