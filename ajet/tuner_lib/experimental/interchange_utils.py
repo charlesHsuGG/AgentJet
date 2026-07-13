@@ -269,7 +269,7 @@ DEBUG = False
 
 VERBOSE = True
 
-shared_http_client = httpx.Client(timeout=30.0)
+shared_http_client = httpx.Client(timeout=120.0)
 
 
 def get_master_node_ip() -> str:
@@ -288,7 +288,7 @@ def get_master_node_ip() -> str:
         if interface_ip != "127.0.0.1":
             return interface_ip
     interface_ip = get_host_ip(None)
-    return master_node_ip or "localhost"
+    return interface_ip or "localhost"
 
 
 def get_interchange_server_url(config):
@@ -312,7 +312,7 @@ def http_change_engine_status(config, new_status: str, new_status_detail: str | 
     resp = shared_http_client.post(
         f"{get_interchange_server_url(config)}/update_engine_status",
         json={"engine_status": new_status, "engine_status_detail": new_status_detail, "global_step": global_step},
-        timeout=10
+        timeout=120.0
     )
     resp.raise_for_status()
     logger.success(f"Changed engine status to {new_status}")
@@ -322,7 +322,7 @@ def is_episode_claimed(config, episode_uuid: str, unregister_if_not_claimed: boo
     resp = shared_http_client.post(
         f"{get_interchange_server_url(config)}/is_episode_claimed",
         json={"episode_uuid": episode_uuid, "unregister_if_not_claimed": unregister_if_not_claimed},
-        timeout=5
+        timeout=120.0
     )
     resp.raise_for_status()
     result = BoolResponse.model_validate(resp.json())
@@ -353,7 +353,7 @@ def http_register_episode(config,
     response = shared_http_client.post(
         f"{interchange_http_addr}/register_episode",
         json=rer.model_dump(),  # 或者 rer.model_dump() 如果使用 Pydantic v2
-        timeout=2
+        timeout=120.0
     )
     response.raise_for_status()
     result = response.json()
@@ -392,7 +392,7 @@ def http_push_verbose_log(message: str, tag: str = "", config=None):
         shared_http_client.post(
             f"{base_url}/push_verbose_log",
             json={"tag": tag, "message": message},
-            timeout=2,
+            timeout=120.0,
         )
     except Exception as e:
         if DEBUG:
@@ -417,7 +417,7 @@ def http_update_rollout_pool_information_and_fetch_instruction(
     """
     url = f"{get_interchange_server_url(config)}/update_current_batch_rollout_pool_information_and_fetch_instruction"
     try:
-        resp = httpx.post(url, json=pool_info.model_dump(), timeout=5)
+        resp = httpx.post(url, json=pool_info.model_dump(), timeout=120.0)
         resp.raise_for_status()
         return SwarmClientInstruction.model_validate(resp.json())
     except Exception as e:
@@ -433,8 +433,9 @@ def get_zmq_socket(config, episode_uuid: str, tag: str = ""):
     interchange_method = config.ajet.interchange_server.interchange_method
     if interchange_method == 'tcp':
         ipc_path = ""
-        master_node_ip = get_master_node_ip()
-        zmq_contect_address = f"tcp://{master_node_ip}:{find_free_port()}"
+        # master_node_ip = get_master_node_ip()
+        interface_ip = get_host_ip(os.getenv("NETWORK_INTERFACE", None))
+        zmq_contect_address = f"tcp://{interface_ip}:{find_free_port()}"
     elif interchange_method == 'ipc':
         ipc_path = f"{ipc_dir}/{episode_uuid}-{tag}.sock"
         zmq_contect_address = f"ipc://{ipc_path}"

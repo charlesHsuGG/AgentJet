@@ -59,6 +59,11 @@ def run_ppo(config: DictConfig, task_runner_class=None) -> None:
                 for distributed PPO training including Ray initialization settings,
                 model paths, and training hyperparameters.
     """
+    if config.ajet.enable_interchange_server:
+        from ajet.tuner_lib.experimental.oai_model_server import \
+            start_interchange_server
+        start_interchange_server(config)
+
     # Check if Ray is not initialized
     if not ray.is_initialized():
         # Initialize Ray with a local cluster configuration
@@ -203,11 +208,6 @@ class TaskRunner(main_ppo.TaskRunner):
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
         from ajet.backbone.trainer_verl import AjetRayPPOTrainer
-
-        # if config.ajet.enable_interchange_server:
-        #     from ajet.tuner_lib.experimental.oai_model_server import \
-        #         start_interchange_server
-        #     start_interchange_server(config)
 
         # Initialize the PPO trainer.
         trainer = AjetRayPPOTrainer(

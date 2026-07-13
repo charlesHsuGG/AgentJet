@@ -1,7 +1,7 @@
 import copy
 import json
 import threading
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 def cleanup_messages(messages: List[Dict]) -> List[Dict]:
@@ -32,6 +32,7 @@ def ajet_apply_chat_template(
     tools,
     add_generation_prompt: bool = False,
     tokenize: bool = True,
+    chat_template: Optional[str] = None,
 ):
     conversation = cleanup_messages(conversation)
 
@@ -54,6 +55,7 @@ def ajet_apply_chat_template(
         result = tokenizer.apply_chat_template(
             conversation,
             tools,
+            chat_template=chat_template,
             add_generation_prompt=add_generation_prompt,
             tokenize=tokenize,
             return_dict=False,  # Return list for caching to avoid issues with tensor serialization
@@ -61,6 +63,7 @@ def ajet_apply_chat_template(
     else:
         result = tokenizer.apply_chat_template(
             conversation,
+            chat_template=chat_template,
             tokenize=tokenize,
             add_generation_prompt=add_generation_prompt,
             return_dict=False,  # Return list for caching to avoid issues with tensor serialization

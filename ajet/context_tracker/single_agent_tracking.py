@@ -1,3 +1,4 @@
+import re
 import copy
 from collections import defaultdict
 from typing import List, Tuple
@@ -294,6 +295,8 @@ class SingleAgentContextTracker(BaseTracker):
                 input_logprobs += ext_msg.token_logprob_arr
             input_ids_len += [len(input_ids)]
             attention_mask += [1] * len(ext_msg.token_arr)
+            if not self.generation_prompt_token:
+                self.generation_prompt_token = self.get_generation_prompt_token()
             loss_mask += ext_msg.get_loss_mask(blackout_token_combo=self.generation_prompt_token)
 
         # if [prompt_token | response_token] is splited at a place where loss_mask == 0,
@@ -415,6 +418,15 @@ class SingleAgentContextTracker(BaseTracker):
 
     def get_generation_prompt_token(self):
         dummy_msg = [{"role": "user", "content": "dummy text"}]
+        text_frag_to = ajet_apply_chat_template(
+            tokenizer=self.tokenizer,
+            conversation=dummy_msg,
+            tools=[],
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+        if text_frag_to.endswith("<think>\n"):
+            text_frag_to = re.sub(r"<think>\n$", "", text_frag_to)
         self.generation_prompt_token, _ = self.get_inc(
             ajet_apply_chat_template(
                 tokenizer=self.tokenizer,
@@ -422,14 +434,7 @@ class SingleAgentContextTracker(BaseTracker):
                 tools=[],
                 add_generation_prompt=False,
                 tokenize=False,
-            ),
-            ajet_apply_chat_template(
-                tokenizer=self.tokenizer,
-                conversation=dummy_msg,
-                tools=[],
-                add_generation_prompt=True,
-                tokenize=False,
-            ),
+            ), text_frag_to,
         )
         self.generation_prompt = self.tokenizer.decode(self.generation_prompt_token)
         return self.generation_prompt_token

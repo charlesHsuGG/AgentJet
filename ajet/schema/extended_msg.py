@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import List
 
 from loguru import logger
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, ProcessorMixin
 
 from ajet.utils.tokenizer import ajet_apply_chat_template
 
@@ -81,7 +81,7 @@ class ExtendedMessage:
     ):
         self.author = author
         self.role = role
-        self.reasoning_content = reasoning_content
+        self.reasoning_content = reasoning_content 
         self.content = content
         self.token_arr = token_arr
         self.token_logprob_arr = token_logprob_arr
@@ -110,52 +110,54 @@ class ExtendedMessage:
 
         if token_generator == "auto":
             self.before_last_query = before_last_query
+            if self.before_last_query:
+                self.reasoning_content = None
             self.token_arr = self.auto_tokenize(
                 tokenizer=tokenizer,
                 tools=tools,
             )
 
     def auto_tokenize(self, tokenizer, tools):
-        # if (not self.first_message) and (self.role == "system"):
-        #     raise ValueError("The system message is usually the first message, check program bugs.")
-        # elif (self.first_message) and (self.role != "system"):
-        #     raise ValueError(
-        #         "The first message is supposed to be the system message, check program bugs, or remove this warning."
-        #     )
+        if not self.first_message and self.role == "system":
+            raise ValueError("The system message is usually the first message, check program bugs.")
+        elif self.first_message and self.role not in ["system", "user"]:
+            raise ValueError(
+                "The first message is supposed to be the system message, check program bugs, or remove this warning."
+            )
+        
+        # avoid qwen 3 chat template jinja render no user query error
+        render_chat_template = None
+        if (self.first_message and self.role == "system") or (self.before_last_query and self.role == "assistant"):
+            if isinstance(tokenizer, ProcessorMixin):
+                chat_template = tokenizer.tokenizer.get_chat_template()
+            else:
+                chat_template = tokenizer.get_chat_template()
+            render_chat_template = chat_template.replace(
+                "{{- raise_exception('No user query found in messages.') }}", "{# {{- raise_exception('No user query found in messages.') }} #}"
+            )
         if not self.first_message:
-            self.token_arr = self.auto_tokenize_non_first_message(tokenizer=tokenizer, tools=tools)
+            self.token_arr = self.auto_tokenize_non_first_message(tokenizer=tokenizer, tools=tools, render_chat_template=render_chat_template)
         else:
-            auto_tokenize_target: dict = {
-                "role": self.role,
-                "content": self.content,
-            }
-            if self.tool_calls:
-                auto_tokenize_target.update({"tool_calls": self.tool_calls})
-            if self.reasoning_content:
-                auto_tokenize_target.update({"reasoning_content": self.reasoning_content})
+            auto_tokenize_target: dict = {"role": self.role, "content": self.content}
             self.token_arr = ajet_apply_chat_template(
                 tokenizer=tokenizer,
                 conversation=[auto_tokenize_target],
                 tokenize=True,
                 tools=tools,
+                chat_template=render_chat_template
             )
         return self.token_arr
 
-    def auto_tokenize_non_first_message(self, tokenizer, tools):
+    def auto_tokenize_non_first_message(self, tokenizer, tools, render_chat_template=None):
         if self.before_last_query:
             # for example, this will remove the <thinking> block for qwen3's chat template
-            dummy_msg = [
-                {"role": "user", "content": "dummy text"},
-                {"role": "assistant", "content": "dummy text"}
-            ]
+            dummy_msg = [{"role": "assistant", "content": "dummy text"}]
         else:
             dummy_msg = [{"role": "user", "content": "dummy text"}]
 
         try:
             # completion_token_arr will contain generation_prompt header
-            auto_tokenize_target: dict = {
-                "role": self.role, "content": self.content,
-            }
+            auto_tokenize_target: dict = {"role": self.role, "content": self.content}
             if self.reasoning_content:
                 auto_tokenize_target.update({"reasoning_content": self.reasoning_content})
             if self.tool_calls:
@@ -167,6 +169,7 @@ class ExtendedMessage:
                 conversation=dummy_msg + [auto_tokenize_target],
                 tokenize=False,
                 tools=tools,
+                chat_template=render_chat_template
             )
         except Exception as e:
             raise ValueError(
@@ -178,6 +181,7 @@ class ExtendedMessage:
                 conversation=dummy_msg,
                 tokenize=False,
                 tools=tools,
+                chat_template=render_chat_template
             ),
             text_frag_to=text_frag_to,
             tokenizer=tokenizer,
@@ -245,8 +249,8 @@ class ExtendedMessage:
                         f"author={self.author} role={self.role} uuid={self.uuid} | "
                         f"override_len={len(self.manual_loss_mask_override)} mask_len={len(msg_token_mask)} | "
                         f"token_arr_len={len(self.token_arr)} content_preview={self.content[:100]!r} | "
-                        f"override={self.manual_loss_mask_override} | "
-                        f"generated_mask={msg_token_mask}"
+                        f"token_arr={self.token_arr[:100]} | blackout_token_combo={blackout_token_combo[:100]} | "
+                        f"override={self.manual_loss_mask_override[:100]} | generated_mask={msg_token_mask[:100]}"
                     )
                     logger.bind(exception=True).error(error_msg)
                     log_dir = "./loss_mask_exception"
