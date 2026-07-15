@@ -81,7 +81,7 @@ class ExtendedMessage:
     ):
         self.author = author
         self.role = role
-        self.reasoning_content = reasoning_content 
+        self.reasoning_content = reasoning_content
         self.content = content
         self.token_arr = token_arr
         self.token_logprob_arr = token_logprob_arr

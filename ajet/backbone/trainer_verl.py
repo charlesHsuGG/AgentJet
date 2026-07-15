@@ -389,6 +389,21 @@ def compute_advantage(
             adv_kwargs["index"] = data.non_tensor_batch["uid"]
         if "reward_baselines" in data.batch:  # optional
             adv_kwargs["reward_baselines"] = data.batch["reward_baselines"]
+        # GDPO: pass raw data for per-dimension reward extraction
+        if adv_estimator in (AdvantageEstimator.GDPO, "gdpo"):
+            adv_kwargs["non_tensor_batch"] = data.non_tensor_batch
+            adv_kwargs["batch"] = data.batch
+        # Add sum_pi_squared for Optimal Token Baseline
+        if adv_estimator in (AdvantageEstimator.OPTIMAL_TOKEN_BASELINE, AdvantageEstimator.TIR_OPTIMAL_TOKEN_BASELINE):
+            # Check if sum_pi_squared is available
+            assert "sum_pi_squared" in data.batch, (
+                "Step-dependent optimal baseline requires sum_pi_squared from actor. "
+                "Please set actor.calculate_sum_pi_squared=True in config."
+            )
+            adv_kwargs["sum_pi_squared"] = data.batch["sum_pi_squared"]
+            # Get pre-computed rollout IS weights if available
+            rollout_is_weights = data.batch.get("rollout_is_weights", None)
+            adv_kwargs["rollout_is_weights"] = rollout_is_weights
 
         # calculate advantage estimator
         advantages, returns = adv_estimator_fn(**adv_kwargs)
@@ -460,11 +475,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
         # Actor validation done in ActorConfig.__post_init__ and validate()
         try:
             actor_config = omega_conf_to_dataclass(config.actor_rollout_ref.actor)
-            actor_config.validate(
-                n_gpus,
-                config.ajet.data.train_batch_size,
-                config.actor_rollout_ref.model,
-            )
+            actor_config.validate(n_gpus, config.ajet.data.train_batch_size, config.actor_rollout_ref.model,)
         except hydra.errors.InstantiationException as e:
             raise ValueError("You are using an unsupported VERL version. Please read `documents/backbones.md`") from e
         if not config.actor_rollout_ref.actor.use_dynamic_bsz:
@@ -684,12 +695,8 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         gen_batch_output = self.parallel_env.to_dataproto(context_tracker_arr)
                         logger.info("end dataproto convertion")
 
-                        success_rate = [
-                            traj.reward_structure.success_rate for traj in context_tracker_arr
-                        ]
-                        madness_rate = [
-                            traj.reward_structure.madness for traj in context_tracker_arr
-                        ]
+                        success_rate = [traj.reward_structure.success_rate for traj in context_tracker_arr]
+                        madness_rate = [traj.reward_structure.madness for traj in context_tracker_arr]
                         # reward = [traj.reward_structure.raw_reward for traj in context_tracker_arr]
                         llm_call_cnt = [traj.llm_call_cnt for traj in context_tracker_arr]
                         metrics.update(
@@ -709,7 +716,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         update_metrics(context_tracker_arr, metrics, prefix="train_")
                         if self.config.ajet.execute_test:  # apply a test probe
                             from swanlab.data.run.main import \
-                                get_run  # pylint: disable=import-outside-toplevel
+                                get_run  # pylint: disable=import-outside-toplevel, no-name-in-module  # noqa
 
                             from ajet.utils.testing_utils import \
                                 _test_if_test_mode  # pylint: disable=import-outside-toplevel
@@ -722,23 +729,33 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                             }
                             _test_if_test_mode(key="reward_probe", value=data, config=self.config)
 
-                        logger.info(
-                            f"gen_batch_output.info batch.keys={gen_batch_output.batch.keys()}"
-                        )
-                        logger.info(
-                            f"gen_batch_output.info non_tensor_batch.keys={gen_batch_output.non_tensor_batch.keys()}"
-                        )
+                        logger.info(f"gen_batch_output.info batch.keys={gen_batch_output.batch.keys()}")
+                        logger.info(f"gen_batch_output.info non_tensor_batch.keys={gen_batch_output.non_tensor_batch.keys()}")
                         self._update_interchange_server_status_flag("ENGINE.WEIGHT_SYNCING")
                         self.checkpoint_manager.sleep_replicas()
                         if curr_step_profile:
                             self.async_rollout_manager.stop_profile()
                     logger.info("rollout step end")
 
-                    batch.non_tensor_batch["uid"] = np.array(
-                        [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object,
-                    )
+                    batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object,)
                     discard_original_batch = self.config.ajet.enable_swarm_mode
                     batch = union_gen_batch_via_task_id(tasks, batch, gen_batch_output, discard_original_batch)
+
+                    batch.batch["response_mask"] = compute_response_mask(batch)
+                    batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
+
+                    if "response_mask" not in batch.batch.keys():
+                        batch.batch["response_mask"] = compute_response_mask(batch)
+                    # Balance the number of valid tokens across DP ranks.
+                    # NOTE: This usually changes the order of data in the `batch`,
+                    # which won't affect the advantage calculation (since it's based on uid),
+                    # but might affect the loss calculation (due to the change of mini-batching).
+                    # TODO: Decouple the DP balancing and mini-batching.
+                    if self.config.trainer.balance_batch:
+                        self._balance_batch(batch, metrics=metrics)
+
+                    # compute global_valid tokens
+                    batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         with marked_timer("gen_max", timing_raw, color="purple"):
@@ -770,22 +787,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                             batch.batch["reward_baselines"] = reward_baseline_tensor
 
                             del rm_scores, gen_baseline_batch, gen_baseline_output
-
-                    batch.batch["response_mask"] = compute_response_mask(batch)
-                    batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-
-                    if "response_mask" not in batch.batch.keys():
-                        batch.batch["response_mask"] = compute_response_mask(batch)
-                    # Balance the number of valid tokens across DP ranks.
-                    # NOTE: This usually changes the order of data in the `batch`,
-                    # which won't affect the advantage calculation (since it's based on uid),
-                    # but might affect the loss calculation (due to the change of mini-batching).
-                    # TODO: Decouple the DP balancing and mini-batching.
-                    if self.config.trainer.balance_batch:
-                        self._balance_batch(batch, metrics=metrics)
-
-                    # compute global_valid tokens
-                    batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
 
                     with marked_timer("reward", timing_raw, color="yellow"):
                         # compute reward model score
@@ -1055,8 +1056,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                 self.global_steps += 1
 
                 if (
-                    hasattr(self.config.actor_rollout_ref.actor, "profiler")
-                    and self.config.actor_rollout_ref.actor.profiler.tool == "torch_memory"
+                    hasattr(self.config.actor_rollout_ref.actor, "profiler") and self.config.actor_rollout_ref.actor.profiler.tool == "torch_memory"
                 ):
                     self.actor_rollout_wg.dump_memory_snapshot(
                         tag=f"post_update_step{self.global_steps}", sub_dir=f"step{self.global_steps}"

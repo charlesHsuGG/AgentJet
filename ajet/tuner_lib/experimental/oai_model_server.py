@@ -258,7 +258,6 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
     async def health():
         return {"status": "ok"}
 
-
     def _parse_authorization_header(authorization):
         """Parse the AgentJet authorization header.
 
@@ -383,7 +382,6 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
 
         return result
 
-
     @app.post("/v1/responses")
     async def responses(request: Request, authorization: str = Header(None)):
         """OpenAI Responses API endpoint (mirrors /v1/chat/completions behaviour).
@@ -400,7 +398,8 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
 
         agent_name, target_tag, episode_uuid, episode_address = _parse_authorization_header(authorization)
 
-        if VERBOSE: logger.info(f"Running [{episode_uuid}]: /v1/responses")
+        if VERBOSE:
+            logger.info(f"Running [{episode_uuid}]: /v1/responses")
 
         body = await request.json()
         instructions = body.get("instructions") if isinstance(body, dict) else None
@@ -428,7 +427,8 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
             timeline_uuid=timeline_uuid,
             preserve_sampling_params=preserve_sampling_params,
         )
-        if DEBUG: logger.info(f"episode_uuid: {episode_uuid} | Received new responses request (outside thread)")
+        if DEBUG:
+            logger.info(f"episode_uuid: {episode_uuid} | Received new responses request (outside thread)")
         loop = asyncio.get_running_loop()
         result: ChatCompletion = await loop.run_in_executor(
             request.app.state.executor, _begin_handle_chat_completion, episode_address, int_req, episode_uuid
@@ -456,7 +456,6 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
             )
 
         return response_dict
-
 
     if enable_swarm_mode:
         from ajet.tuner_lib.experimental.swarm_server import \

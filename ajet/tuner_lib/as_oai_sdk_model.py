@@ -1,22 +1,24 @@
-from typing import Any, List, Callable
-from ajet.context_tracker.multiagent_tracking import (
-    MultiAgentContextTracker,
-)
-from ajet.task_rollout.async_llm_bridge import OpenaiLlmProxyWithTracker
-from openai.types.chat.chat_completion import ChatCompletion
+from typing import Any, Callable, List
+
+from openai import AsyncOpenAI
 from openai.resources.chat.chat import AsyncChat
 from openai.resources.completions import AsyncCompletions
-from openai import AsyncOpenAI
+from openai.types.chat.chat_completion import ChatCompletion
+
+from ajet.context_tracker.multiagent_tracking import MultiAgentContextTracker
+from ajet.task_rollout.async_llm_bridge import OpenaiLlmProxyWithTracker
 
 
 class MockAsyncCompletions(AsyncCompletions):
-    async def create(self, *args, **kwargs) -> Any: # type: ignore
-        return await self._client.create(*args, **kwargs) # type: ignore
+    async def create(self, *args, **kwargs) -> Any:  # type: ignore
+        return await self._client.create(*args, **kwargs)  # type: ignore
+
 
 class MockAsyncChat(AsyncChat):
     @property
     def completions(self) -> MockAsyncCompletions:  # type: ignore
         return MockAsyncCompletions(self._client)
+
 
 class OpenaiClientModelTuner(AsyncOpenAI):
     """ At this layer, we will determine which model to use:
@@ -59,17 +61,17 @@ class OpenaiClientModelTuner(AsyncOpenAI):
         if self.use_debug_model and (self.debug_model is not None):
             client = AsyncOpenAI()
             return await client.chat.completions.create(
-                model = self.debug_model,
-                messages = messages,    # type: ignore
-                tools = tools,
-                tool_choice = tool_choice, # type: ignore
+                model=self.debug_model,
+                messages=messages,    # type: ignore
+                tools=tools,
+                tool_choice=tool_choice,  # type: ignore
             )
 
         # call llm model ✨
         response_gen = await self.llm_proxy(
-            messages = messages,
-            tools = tools,
-            tool_choice = tool_choice,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
         )
         assert isinstance(response_gen, ChatCompletion)
         return response_gen

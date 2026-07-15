@@ -465,7 +465,7 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                 # good, everything is perfect
                 continue
             else:
-                from ajet import bp; bp("SWARM")
+                from ajet import bp; bp("SWARM")  # pylint: disable=import-outside-toplevel,no-name-in-module  # noqa
                 # otherwise, we throw a warning (do not worry, this causes almost no influence in the training)
                 print_dict(
                     {

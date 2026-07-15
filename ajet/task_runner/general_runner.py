@@ -29,7 +29,7 @@ class GeneralRunner(BaseAgentRunner):
             llm_inference_fn=self.llm_inference_fn,
             tokenizer=self.tokenizer,
             config=self.config,
-            workflow_task = workflow_task,
+            workflow_task=workflow_task,
             **hooks,
         )
         tuner = AjetTuner(

@@ -665,10 +665,7 @@ class VerlRolloutManager(DynamicRolloutManager):
 
         for sample in samples:
             assert (
-                len(sample.input_ids)
-                == len(sample.attention_mask)
-                == len(sample.position_ids)
-                == len(sample.loss_mask)
+                len(sample.input_ids) == len(sample.attention_mask) == len(sample.position_ids) == len(sample.loss_mask)
             ), f"Sample has mismatched lengths: {len(sample.input_ids)=}, {len(sample.attention_mask)=}, {len(sample.position_ids)=}, {len(sample.loss_mask)=}"
 
             task_ids.append(sample.task_id)

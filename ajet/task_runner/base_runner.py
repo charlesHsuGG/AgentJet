@@ -1,18 +1,20 @@
 import asyncio
-from threading import Lock
-from typing import Any, Callable, Union, Type
 from multiprocessing import Process, Queue
+from threading import Lock
+from typing import Any, Callable, Type, Union
 
-from ajet.context_tracker.single_agent_tracking import SingleAgentContextTracker
+from ajet.context_tracker.single_agent_tracking import \
+    SingleAgentContextTracker
 from ajet.schema.task import WorkflowOutput, WorkflowTask
 from ajet.task_judge.base_judge import BaseJudge
 from ajet.tuner import AjetTuner
+from ajet.tuner_lib.experimental.interchange_utils import is_episode_claimed
 from ajet.utils.async_utils import run_async_coroutine_with_timeout
 from ajet.utils.dynamic_import import dynamic_import
 from ajet.workflow import Workflow
-from ajet.tuner_lib.experimental.interchange_utils import is_episode_claimed
 
 gc_lock = Lock()
+
 
 class BaseAgentRunner(object):
 
@@ -32,7 +34,6 @@ class BaseAgentRunner(object):
         assert self.wrapper_type in ["asyncio", "asyncio-with-gc", "multi-processing"], \
             f"Unsupported wrapper type: {self.wrapper_type}, available options: ['asyncio', 'asyncio-with-gc', 'multi-processing']"
 
-
     def get_judge(self) -> BaseJudge:  # type: ignore
         if self.config.ajet.task_judge.judge_type == "customized_protocol":
             judge_protocol = self.config.ajet.task_judge.judge_protocol
@@ -46,17 +47,18 @@ class BaseAgentRunner(object):
             run_async_coroutine_with_timeout(judge.load_rubrics_from_cache())
             return judge
 
-
     def runner_hooks(self, observation_window, task_thread_index, workflow_task):
         def should_interrupt_soft_fn() -> bool:
-            if (observation_window["stop"] is not None) and observation_window["stop"][task_thread_index]:  # Check if the thread should stop (because other threads have completed, making this thread useless)
+            # Check if the thread should stop (because other threads have completed, making this thread useless)
+            if (observation_window["stop"] is not None) and observation_window["stop"][task_thread_index]:
                 return True
             return False
 
         def should_interrupt_hard_fn() -> bool:
-            if (observation_window["hard_stop"] is not None) and observation_window["hard_stop"][task_thread_index]:  # Check if the thread should stop (because other threads have completed, making this thread useless)
+            # Check if the thread should stop (because other threads have completed, making this thread useless)
+            if (observation_window["hard_stop"] is not None) and observation_window["hard_stop"][task_thread_index]:
                 return True
-            if (observation_window["stop"] is not None) and observation_window["stop"][task_thread_index]: # check soft condition
+            if (observation_window["stop"] is not None) and observation_window["stop"][task_thread_index]:  # check soft condition
                 # if soft condition met, check if episode is claimed
                 has_claimed = is_episode_claimed(self.config, workflow_task.episode_uuid, unregister_if_not_claimed=True)
                 if not has_claimed:
@@ -73,7 +75,6 @@ class BaseAgentRunner(object):
             "generated_token_callback_fn": generated_token_callback_fn,
         }
 
-
     async def wrapper_type_asyncio(self, workflow_cls: Type[Workflow], workflow_task: WorkflowTask, tuner: AjetTuner) -> WorkflowOutput:
         user_workflow: Workflow = workflow_cls(name="ajet-workflow")
         result = await user_workflow.execute(workflow_task, tuner)
@@ -88,7 +89,6 @@ class BaseAgentRunner(object):
         #     finally:
         #         gc_lock.release()
         return result
-
 
     def wrapper_type_multiprocessing(self, workflow_cls: Type[Workflow], workflow_task: WorkflowTask, tuner: AjetTuner) -> WorkflowOutput:
         def worker(q: Queue):
@@ -105,7 +105,6 @@ class BaseAgentRunner(object):
             p.join()
             raise TimeoutError(f"Workflow execution timeout after {self.wrapper_multiprocessing_timeout} seconds")
         return q.get()
-
 
     def run_user_workflow(
         self,
