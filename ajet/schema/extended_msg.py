@@ -204,9 +204,7 @@ class ExtendedMessage:
     @property
     def need_training(self):
         assert (
-            (self.author in NEED_TRAIN_AUTHORS)
-            or (self.author in NON_TRAIN_AUTHORS)
-            or (self.author.endswith("(discard)"))
+            (self.author in NEED_TRAIN_AUTHORS) or (self.author in NON_TRAIN_AUTHORS) or (self.author.endswith("(discard)"))
         ), f"author {self.author} is not identified"
         return self.author in NEED_TRAIN_AUTHORS
 

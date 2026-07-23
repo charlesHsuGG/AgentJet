@@ -246,6 +246,7 @@ class AsyncLlmBridge(object):
             return {
                 "role": "assistant",
                 "request_id": response.id,
+                "reasoning_content": None,
                 "content": content,
                 "prompt_text": prompt_text,
                 "prompt_token_ids": prompt_token_ids,
@@ -369,6 +370,7 @@ class OpenaiLlmProxyWithTracker(object):
         return {
             "role": "assistant",
             "request_id": "overflow_response",
+            "reasoning_content": None,
             "content": f"AgentJet: Exceeded max model context length. {info}",
             "tool_calls": None,
             "finish_reason": "length",

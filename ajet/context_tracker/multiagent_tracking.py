@@ -235,7 +235,9 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
         if not self.already_mad_flag:
             if (
                 compute_string_madness(
-                    completion=llm_output["content"],
+                    completion=(
+                        f"<think>\n{llm_output["reasoning_content"]}\n</think>" + llm_output["content"]
+                    ) if llm_output["reasoning_content"] else llm_output["content"],
                     checklist=self.config.ajet.rollout.compute_madness_checklist,
                 )
                 < 0.0
@@ -248,6 +250,7 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
         llm_ext_msg = ExtendedMessage(
             author="llm",
             role="assistant",
+            reasoning_content=llm_output["reasoning_content"],
             content=llm_output["content"],
             token_generator="manual",
             tool_calls=tool_calls,
@@ -265,10 +268,10 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
         llm_ext_msg.lack_normal_eos = lack_normal_eos
         llm_ext_msg.manual_loss_mask_override = loss_mask
 
-        # assert (
-        #     len(precise_manual_token)
-        #     <= self.config.ajet.rollout.max_response_length_in_one_turn
-        # ), f"Generated token length {len(precise_manual_token)} exceeds max_response_length_in_one_turn {self.config.ajet.rollout.max_response_length_in_one_turn}"
+        assert (
+            len(precise_manual_token)
+            <= self.config.ajet.rollout.max_response_length_in_one_turn
+        ), f"Generated token length {len(precise_manual_token)} exceeds max_response_length_in_one_turn {self.config.ajet.rollout.max_response_length_in_one_turn}"
 
         # run generated token callback, usually to monitor token output rate ( e.g. 164 tokens/sec )
         self.generated_token_callback_fn(llm_ext_msg.token_arr)

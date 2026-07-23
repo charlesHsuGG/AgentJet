@@ -706,9 +706,9 @@ class VerlRolloutManager(DynamicRolloutManager):
             reward_extra_info_list.append(sample.reward_extra)
 
         max_prompt_length_this_batch = max([p.shape[-1] for p in prompt_ids])
-        assert max_prompt_length_this_batch <= self.config.ajet.data.max_prompt_length
+        assert 0 < max_prompt_length_this_batch <= self.config.ajet.data.max_prompt_length
         max_response_length_this_batch = max([p.shape[-1] for p in response_ids])
-        assert max_response_length_this_batch <= self.config.ajet.data.max_response_length
+        assert 0 < max_response_length_this_batch <= self.config.ajet.data.max_response_length
 
         prompt_ids = pad_sequence(
             prompt_ids,

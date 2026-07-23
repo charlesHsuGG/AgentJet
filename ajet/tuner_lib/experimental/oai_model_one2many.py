@@ -411,7 +411,7 @@ async def handle_one2many_request(request: Request, request_id: str) -> Dict | L
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
     global swarm_client
-    global ajet_job
+    global ajet_job  # noqa
 
     logger.info(f"Initializing swarm client with URL: {SWARM_URL}")
     swarm_client = SwarmClient(SWARM_URL)

@@ -817,13 +817,14 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
                     bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
                     if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
-                        from verl.trainer.ppo.rollout_corr_helper import \
-                            apply_bypass_mode  # pylint: disable=import-outside-toplevel
-                        apply_bypass_mode(
-                            batch=batch,
-                            rollout_corr_config=rollout_corr_config,
-                            policy_loss_config=self.config.actor_rollout_ref.actor.policy_loss,
-                        )
+                        if "rollout_log_probs" not in batch.batch:
+                            raise ValueError(
+                                "bypass_mode=True requires rollout_log_probs in batch. "
+                                "Ensure rollout worker is configured to calculate_log_probs=true."
+                            )
+
+                        # Use rollout log probs as old log probs (zero-cost substitution)
+                        batch.batch["old_log_probs"] = batch.batch["rollout_log_probs"]
                     else:  # Recompute old_log_probs
                         with marked_timer("old_log_prob", timing_raw, color="blue"):
                             old_log_prob, old_log_prob_mfu = self._compute_old_log_prob(batch)

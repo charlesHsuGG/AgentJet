@@ -1,13 +1,15 @@
-from typing import TYPE_CHECKING, Callable, Union, Type
+from typing import TYPE_CHECKING, Callable, Type, Union
 
 from ajet.context_tracker.multiagent_tracking import MultiAgentContextTracker
-from ajet.tuner_lib import AgentScopeModelTuner
-from ajet.tuner_lib import OpenaiClientModelTuner
+from ajet.tuner_lib import (  # pylint: disable=no-name-in-module
+    AgentScopeModelTuner, OpenaiClientModelTuner)
 from ajet.tuner_lib.as_oai_baseurl_apikey import OpenaiClientBaseUrlTuner
+
 if TYPE_CHECKING:
     from ajet import Workflow
 
 TunerTypeUnion = Union[AgentScopeModelTuner, OpenaiClientModelTuner]
+
 
 class AjetTuner(object):
 
@@ -22,16 +24,14 @@ class AjetTuner(object):
         self.trainable_targets = self._get_trainable_targets(workflow_cls)
         self.context_tracker = context_tracker
         self.llm_inference_fn = llm_inference_fn
-        self.target2proxy_registry: dict[str, dict[str,TunerTypeUnion]] = {}
+        self.target2proxy_registry: dict[str, dict[str, TunerTypeUnion]] = {}
         self.enable_interchange_server = config.ajet.enable_interchange_server
         if self.enable_interchange_server:
             self.proxy_client_started = False
 
-
     def _get_trainable_targets(self, workflow_cls: Type["Workflow"]):
         workflow_instance = workflow_cls(name="ajet-workflow")
         return workflow_instance.trainable_targets
-
 
     def as_agentscope_model(
         self,
@@ -55,7 +55,6 @@ class AjetTuner(object):
         self._register(target_tag, agent_name, explicit_tuner_as_modelscope_model)
         return explicit_tuner_as_modelscope_model
 
-
     def as_raw_openai_sdk_client(
         self,
         agent_name="default_agent_name",
@@ -77,7 +76,6 @@ class AjetTuner(object):
         )
         self._register(target_tag, agent_name, explicit_tuner_as_oai_client)
         return explicit_tuner_as_oai_client
-
 
     def as_oai_baseurl_apikey(
         self,
@@ -122,11 +120,9 @@ class AjetTuner(object):
         """
         raise RuntimeError("This method is deprecated. Please use `as_agentscope_model` / `as_raw_openai_sdk_client` first.")
 
-
     # ------------------------------------------------------------------------
     # other helper methods
     # ------------------------------------------------------------------------
-
     def _register(self, target_name: str, agent_name: str, explicit_tuner: TunerTypeUnion) -> TunerTypeUnion:
         """Register an agent type.
         Args:
@@ -143,7 +139,6 @@ class AjetTuner(object):
         self.target2proxy_registry[target_name][agent_name] = explicit_tuner
         return explicit_tuner
 
-
     def _is_target_trainable(self, target_name) -> bool:
         """Determine whether user have used `trainable_targets` to explicitly control training targets.
         """
@@ -158,7 +153,6 @@ class AjetTuner(object):
         else:
             return False
 
-
     def get_context_tracker(self) -> MultiAgentContextTracker:
         """Get the context tracker instance.
         Returns:
@@ -167,11 +161,11 @@ class AjetTuner(object):
         """
         return self.context_tracker
 
-
     def _enable_interchange_server(self, llm_inference_fn):
         # experimental reverse proxy start
         if self.enable_interchange_server:
-            from ajet.tuner_lib.experimental.oai_model_client import InterchangeClient
+            from ajet.tuner_lib.experimental.oai_model_client import \
+                InterchangeClient
             self.interchange_client = InterchangeClient(
                 episode_uuid=self.context_tracker.episode_uuid,
                 context_tracker=self.context_tracker,
@@ -179,7 +173,6 @@ class AjetTuner(object):
                 llm_inference_fn=llm_inference_fn,
             )
             return self.interchange_client.begin_service()
-
 
     def terminate_episode(self):
         # experimental reverse proxy cleanup

@@ -1,4 +1,4 @@
-from typing import Any, Literal, Type, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, Type
 
 from agentscope._utils._common import _create_tool_from_base_model
 from agentscope.model import ChatResponse, DashScopeChatModel
@@ -42,7 +42,6 @@ class AgentScopeModelTuner(DashScopeChatModel):
             stream=False,
         )
 
-
     async def __call__(
         self,
         messages: list[dict[str, Any]],
@@ -57,7 +56,6 @@ class AgentScopeModelTuner(DashScopeChatModel):
             chatresponse = await self.debug_model(messages, tools, tool_choice, structured_model, **kwargs)
             assert isinstance(chatresponse, ChatResponse)
             return chatresponse
-
 
         # For qvq and qwen-vl models, the content field cannot be `None` or
         # `[{"text": None}]`, so we need to convert it to an empty list.

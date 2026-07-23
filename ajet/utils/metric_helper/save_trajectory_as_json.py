@@ -1,5 +1,6 @@
-import os
 import json
+import os
+
 from ajet.utils.msg_converter import convert_grouped_steps_to_openai_format
 
 
@@ -50,6 +51,5 @@ def save_trajectory_as_json(ctx_trackers, global_steps, prefix="train"):
         # Save trajectory data to JSON file
         with open(traj_file_path, "w", encoding="utf-8") as f:
             json.dump(traj_data, f, ensure_ascii=False, indent=2)
-
 
         print(f"Saved trajectory to {traj_file_path}")

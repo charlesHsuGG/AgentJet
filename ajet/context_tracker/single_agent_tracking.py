@@ -1,5 +1,5 @@
-import re
 import copy
+import re
 from collections import defaultdict
 from typing import List, Tuple
 
@@ -56,13 +56,8 @@ class SingleAgentContextTracker(BaseTracker):
         return input_id_increment, msg
 
     # generate token
-    def get_token_inc_from_llm_response(
-        self, input_msg_ref, llm_output, tools: List[dict] = []
-    ) -> Tuple[List[int], List[int], List[int], bool]:
-        llm_output_role_content = {
-            "role": llm_output["role"],
-            "content": llm_output["content"],
-        }
+    def get_token_inc_from_llm_response(self, input_msg_ref, llm_output, tools: List[dict] = []) -> Tuple[List[int], List[int], List[int], bool]:
+        llm_output_role_content = {"role": llm_output["role"], "reasoning_content": llm_output["reasoning_content"], "content": llm_output["content"]}
         if llm_output.get("tool_calls", None):
             llm_output_role_content.update({"tool_calls": llm_output.get("tool_calls", [])})
 
@@ -120,8 +115,7 @@ class SingleAgentContextTracker(BaseTracker):
                 limit_item_value = int(limit_item_value)
                 # remove all message whose author is `llm_author` except the last `limit_item_value` messages
                 num_need_rm = (
-                    len([c for c in filtered_via_authors if c.author == limit_author])
-                    - limit_item_value
+                    len([c for c in filtered_via_authors if c.author == limit_author]) - limit_item_value
                 )
                 if num_need_rm > 0:
                     num_already_rm = 0
@@ -138,8 +132,7 @@ class SingleAgentContextTracker(BaseTracker):
                 limit_item_value = int(limit_item_value)
                 # remove all message whose author is `llm_author` except the first `limit_item_value` messages
                 num_need_keep = (
-                    len([c for c in filtered_via_authors if c.author == limit_author])
-                    - limit_item_value
+                    len([c for c in filtered_via_authors if c.author == limit_author]) - limit_item_value
                 )
                 if num_need_keep > 0:
                     num_already_keep = 0
@@ -158,9 +151,7 @@ class SingleAgentContextTracker(BaseTracker):
                 )
         return filtered_via_authors
 
-    def compute_step_level_reward(
-        self, index: int, total_steps: int
-    ) -> float:
+    def compute_step_level_reward(self, index: int, total_steps: int) -> float:
         # TODO: support multi-step reward
         assert self.reward_structure is not None
 
@@ -183,10 +174,7 @@ class SingleAgentContextTracker(BaseTracker):
     def to_role_content(self, ext_msg_array: List[ExtendedMessage]) -> List:
         result = []
         for ext_msg in ext_msg_array:
-            d: dict = {
-                "role": ext_msg.role,
-                "content": ext_msg.text_content_for_compare,
-            }
+            d: dict = {"role": ext_msg.role, "content": ext_msg.text_content_for_compare}
             if ext_msg.tool_calls:
                 d.update({"tool_calls": ext_msg.tool_calls})
             if ext_msg.tool_call_id:
@@ -314,9 +302,7 @@ class SingleAgentContextTracker(BaseTracker):
             split_prompt_response_index = self.config.ajet.data.max_prompt_length
 
         # check
-        assert len(ext_steps) == len(
-            input_ids_len
-        ), "length of ext_steps and input_ids_len should be equal"
+        assert len(ext_steps) == len(input_ids_len), "length of ext_steps and input_ids_len should be equal"
         assert (
             split_prompt_response_index != -1
         ), "split_prompt_response_index should not be -1, at least one message should be in the context"
@@ -418,15 +404,6 @@ class SingleAgentContextTracker(BaseTracker):
 
     def get_generation_prompt_token(self):
         dummy_msg = [{"role": "user", "content": "dummy text"}]
-        text_frag_to = ajet_apply_chat_template(
-            tokenizer=self.tokenizer,
-            conversation=dummy_msg,
-            tools=[],
-            add_generation_prompt=True,
-            tokenize=False,
-        )
-        if text_frag_to.endswith("<think>\n"):
-            text_frag_to = re.sub(r"<think>\n$", "", text_frag_to)
         self.generation_prompt_token, _ = self.get_inc(
             ajet_apply_chat_template(
                 tokenizer=self.tokenizer,
@@ -434,7 +411,17 @@ class SingleAgentContextTracker(BaseTracker):
                 tools=[],
                 add_generation_prompt=False,
                 tokenize=False,
-            ), text_frag_to,
+            ),
+            re.sub(
+                r"<think>\n?(\n?<\/think>\n?\n?)?$", "",
+                ajet_apply_chat_template(
+                    tokenizer=self.tokenizer,
+                    conversation=dummy_msg,
+                    tools=[],
+                    add_generation_prompt=True,
+                    tokenize=False,
+                )
+            ),
         )
         self.generation_prompt = self.tokenizer.decode(self.generation_prompt_token)
         return self.generation_prompt_token

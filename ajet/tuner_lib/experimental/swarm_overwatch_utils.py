@@ -1,4 +1,5 @@
-from typing import List, Dict
+from typing import Dict, List
+
 from pydantic import BaseModel
 
 
@@ -14,7 +15,7 @@ class CurrentBatchRolloutPoolInformation(BaseModel):
     completed_tasks_details: Dict[str, List[str]] = {}           # task_id -> list of episode_uuids
     completed_tasks_rewards: Dict[str, List[float]] = {}         # task_id -> list of rewards (one per episode)
     completed_tasks_client_uuids: Dict[str, List[str]] = {}      # task_id -> list of client UUIDs (one per episode)
-    running_episode_details: Dict[str, Dict[str, str]] | None = None # episode_uuid -> { "episode_status": ..., "time_since_last_activity": ..., "discard_episode_timeout": ..., "llm_call_count": ..., "client_uuid": ... }
+    running_episode_details: Dict[str, Dict[str, str]] | None = None  # episode_uuid -> { "episode_status": ..., "time_since_last_activity": ..., "discard_episode_timeout": ..., "llm_call_count": ..., "client_uuid": ... }  # noqa
     engine_status: str | None = None
     global_step: int | None = None
     booting_start_time: float | None = None  # timestamp when ENGINE.BOOTING started

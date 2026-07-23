@@ -1,12 +1,12 @@
-import os
 import asyncio
+import os
+from typing import Dict, List, Literal, Optional, cast
+
 import datasets
 import openai
 import swanlab
-
 from loguru import logger
 from transformers import AutoTokenizer
-from typing import Dict, List, Literal, Optional, cast
 from trinity.buffer.reader import READER
 from trinity.buffer.reader.file_reader import TaskFileReader, _HFBatchReader
 from trinity.buffer.schema import FORMATTER
@@ -165,16 +165,16 @@ class AjetWorkflowWrap(Workflow):
                     metrics=metrics,  # for wandb logging (must be string:float)
                     response_text="",  # optional
                     prompt_text="",  # optional
-                    #### for multi-turn experiences
+                    # for multi-turn experiences
                     action_mask=response_loss_mask,  # 1 stands for training, 0 stands for ignoring
                     messages=sample.messages,  #
                     # tools,
-                    #### for dpo experiences
+                    # for dpo experiences
                     # chosen,
                     # rejected,
                     # chosen_messages,
                     # rejected_messages,
-                    #### for multi-modal data
+                    # for multi-modal data
                     # multi_modal_inputs
                 )
                 exps += [exp]
@@ -194,10 +194,8 @@ try:
 
             ajet_config = get_ajet_config_from_trinity_side()
 
-            from ajet.task_reader import (
-                RouterTaskReader,
-                task_to_standard_dataset,
-            )
+            from ajet.task_reader import (RouterTaskReader,
+                                          task_to_standard_dataset)
 
             task_reader = RouterTaskReader(
                 ajet_config.ajet.task_reader.type,
@@ -208,7 +206,7 @@ try:
             if "train" in self.split:
                 dataset_segments.append(task_to_standard_dataset(task_reader.generate_training_tasks))   # type: ignore
             if "val" in self.split:
-                dataset_segments.append(task_to_standard_dataset(task_reader.generate_validation_tasks)) # type: ignore
+                dataset_segments.append(task_to_standard_dataset(task_reader.generate_validation_tasks))  # type: ignore
             if not dataset_segments:
                 raise ValueError(
                     f"Unsupported split '{self.split}'. Expected to contain 'train' or 'val'."
@@ -322,7 +320,7 @@ class SwanlabMonitor(Monitor):
         self.logger = swanlab.init(**init_kwargs)
         self.console_logger = get_logger(__name__, in_ray_actor=True)
 
-        run_info = self.logger.public.json()
+        run_info = self.logger.public.json()  # pylint: disable=no-member
         self.data_dashboard_url = run_info["cloud"]["experiment_url"]
 
     def log_table(self, table_name: str, experiences_table, step: int):

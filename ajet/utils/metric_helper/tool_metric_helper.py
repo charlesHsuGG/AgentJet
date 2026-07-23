@@ -11,7 +11,8 @@ SwanLab metrics directory structure:
 - tool_error/           Error rate by tool
 """
 
-from typing import List, Dict, Any
+from typing import Any, Dict, List
+
 import numpy as np
 
 
@@ -31,7 +32,6 @@ def extract_tool_stats_from_trajectories(trajectories: List[Any]) -> List[Dict[s
             if 'tool_stats' in traj.log_metrics:
                 tool_stats_list.append(traj.log_metrics['tool_stats'])
     return tool_stats_list
-
 
 
 def compute_tool_metrics(tool_stats_list: List[Dict[str, Any]], prefix: str = "") -> Dict[str, float]:
@@ -126,7 +126,6 @@ def compute_tool_metrics(tool_stats_list: List[Dict[str, Any]], prefix: str = ""
             error_rate = errors / calls * 100
             metrics[f"{prefix}tool_error/{tool_name}/error_rate"] = round(error_rate, 2)
             metrics[f"{prefix}tool_error/{tool_name}/calls"] = calls
-
 
     return metrics
 
