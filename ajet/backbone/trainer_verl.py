@@ -13,7 +13,6 @@
 # limitations under the License.
 
 
-import asyncio
 import os
 import uuid
 from collections import defaultdict
@@ -45,7 +44,6 @@ from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
 from verl.utils.metric import reduce_metrics
-from verl.utils.ray_utils import auto_await
 from verl.utils.rollout_skip import RolloutSkip
 
 from ajet.backbone.warm_up import warm_up_process
@@ -123,7 +121,7 @@ def union_gen_batch_via_task_id(tasks, batch: DataProto, gen_batch_output: DataP
         return batch_final
     else:
         gen_batch_output.non_tensor_batch['uid'] = gen_batch_output.non_tensor_batch["task_ids"]
-        task_id_counter = {}
+        task_id_counter: Dict[str, int] = {}
         for i, tid in enumerate(gen_batch_output.non_tensor_batch["task_ids"]):
             if tid in task_id_counter:
                 task_id_counter[tid] += 1
@@ -530,9 +528,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
         )
 
         self.parallel_env = VerlRolloutManager(
-            config=self.config,
-            async_rollout_manager=real_async_rollout_manager,
-            max_parallel=self.config.ajet.rollout.max_env_worker,
+            config=self.config, async_rollout_manager=real_async_rollout_manager, max_parallel=self.config.ajet.rollout.max_env_worker,
             tokenizer=self.tokenizer,
         )
 
@@ -542,11 +538,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                 from ajet.tuner_lib.experimental.interchange_utils import \
                     http_change_engine_status  # pylint: disable=import-outside-toplevel
                 http_change_engine_status(self.config, status, global_step=self.global_steps)
-
-    @auto_await
-    async def _sleep_rollout_replicas(self):
-        await asyncio.gather(*[replica.abort_all_requests() for replica in self.checkpoint_manager.replicas])
-        await self.checkpoint_manager.sleep_replicas()
 
     # #######################################
     # training loop
@@ -566,10 +557,13 @@ class AjetRayPPOTrainer(RayPPOTrainer):
         )
 
         self.global_steps = 0
+        self.gen_steps = 0
 
         # load checkpoint and update weights before doing anything
         self._load_checkpoint()
         self.checkpoint_manager.update_weights(self.global_steps)
+
+        current_epoch = self.global_steps // len(self.train_dataloader)
 
         # [oc] swarm_mode is not compatible with `val_before_train` and `val_only`
         assert not (self.config.ajet.enable_swarm_mode and (self.config.ajet.trainer_common.val_before_train or self.config.ajet.trainer_common.val_only)), \
@@ -600,6 +594,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
 
         # we start from step 1
         self.global_steps += 1
+        self.gen_steps += 1
         last_val_metrics = None
         self.max_steps_duration = 0
 
@@ -611,7 +606,12 @@ class AjetRayPPOTrainer(RayPPOTrainer):
         )
         next_step_profile = False
 
-        for epoch in range(self.config.trainer.total_epochs):
+        timing_raw = defaultdict(float)
+        batch = None
+        num_prompt_in_batch = 0
+        num_gen_batches = 0
+
+        for epoch in range(current_epoch, self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
                 if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
                     self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=False)
@@ -630,12 +630,10 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     [i for i in range(len(batch_dict["task_id"]))], dtype=torch.long,
                 )
 
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
+                new_batch: DataProto = DataProto.from_single_dict(batch_dict)
 
                 # add uid to batch
-                batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
-                )
+                new_batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object)
 
                 # # pop those keys for generation
                 batch_keys_to_pop = ["index"]
@@ -646,10 +644,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                     "metadata",
                     "init_messages",
                 ]
-                gen_batch = batch.pop(
-                    batch_keys=batch_keys_to_pop,
-                    non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
-                )
+                gen_batch = new_batch.pop(batch_keys=batch_keys_to_pop, non_tensor_batch_keys=non_tensor_batch_keys_to_pop)
                 gen_batch = self._get_gen_batch(gen_batch)
 
                 # pass global_steps to trace
@@ -674,20 +669,11 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                             ))
                             for i in range(len(gen_batch))
                         ]
-                        logger.info(
-                            str(
-                                [
-                                    gen_batch.non_tensor_batch["task_id"][i]
-                                    for i in range(len(gen_batch))
-                                ]
-                            )
-                        )
+                        logger.info(str([gen_batch.non_tensor_batch["task_id"][i] for i in range(len(gen_batch))]))
                         logger.info("start batch rollout")
                         self.parallel_env.current_global_steps = self.global_steps
                         # rollout stage begin ✨✨✨✨✨✨✨✨✨✨✨✨✨✨✨✨✨✨✨✨✨
-                        context_tracker_arr: List[SingleAgentContextTracker] = self.parallel_env.rollout(
-                            tasks, mode="sample", epoch=f"train.{epoch}"
-                        )
+                        context_tracker_arr: List[SingleAgentContextTracker] = self.parallel_env.rollout(tasks, mode="sample", epoch=f"train.{epoch}")
 
                         # from ajet import bp; bp("BATCH")
 
@@ -704,12 +690,8 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                                 "critic/llm_call_cnt": np.mean(llm_call_cnt),
                                 "critic/madness_rate": np.mean(madness_rate),
                                 "critic/success_rate": np.mean(success_rate),
-                                "critic/real_success_rate": np.mean(
-                                    context_tracker_arr[0].current_batch_success_rate
-                                ),
-                                "critic/real_reward": np.mean(
-                                    context_tracker_arr[0].current_batch_reward
-                                ),
+                                "critic/real_success_rate": np.mean(context_tracker_arr[0].current_batch_success_rate),
+                                "critic/real_reward": np.mean(context_tracker_arr[0].current_batch_reward),
                             }
                         )
                         save_trajectory_as_json_file(context_tracker_arr, self.global_steps, self.config, prefix="train")
@@ -732,20 +714,132 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         logger.info(f"gen_batch_output.info batch.keys={gen_batch_output.batch.keys()}")
                         logger.info(f"gen_batch_output.info non_tensor_batch.keys={gen_batch_output.non_tensor_batch.keys()}")
                         self._update_interchange_server_status_flag("ENGINE.WEIGHT_SYNCING")
-                        self.checkpoint_manager.sleep_replicas()
                         if curr_step_profile:
                             self.async_rollout_manager.stop_profile()
                     logger.info("rollout step end")
 
-                    batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object,)
+                    new_batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object,)
                     discard_original_batch = self.config.ajet.enable_swarm_mode
-                    batch = union_gen_batch_via_task_id(tasks, batch, gen_batch_output, discard_original_batch)
+                    new_batch = union_gen_batch_via_task_id(tasks, new_batch, gen_batch_output, discard_original_batch)
 
-                    batch.batch["response_mask"] = compute_response_mask(batch)
-                    batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
+                    new_batch.batch["response_mask"] = compute_response_mask(new_batch)
+                    new_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
 
-                    if "response_mask" not in batch.batch.keys():
-                        batch.batch["response_mask"] = compute_response_mask(batch)
+                    num_gen_batches += 1
+
+                    if "response_mask" not in new_batch.batch.keys():
+                        new_batch.batch["response_mask"] = compute_response_mask(new_batch)
+
+                    if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
+                        with marked_timer("gen_max", timing_raw, color="purple"):
+                            gen_baseline_batch = deepcopy(new_batch)
+                            gen_baseline_batch.meta_info["do_sample"] = False
+                            if curr_step_profile:
+                                self.async_rollout_manager.start_profile()
+                            gen_baseline_output = self.async_rollout_manager.generate_sequences(gen_baseline_batch)
+                            if curr_step_profile:
+                                self.async_rollout_manager.stop_profile()
+                            new_batch = new_batch.union(gen_baseline_output)
+                            # compute reward model score on batch
+                            rm_scores = None
+                            if self.use_rm and "rm_scores" not in new_batch.batch.keys():
+                                batch_reward = self._compute_reward_colocate(batch)
+                                new_batch = new_batch.union(batch_reward)
+
+                                # Compute or extract reward for REMAX baseline
+                                reward_baseline_tensor = new_batch.batch["rm_scores"].sum(dim=-1)
+                            else:
+                                reward_baseline_tensor, _ = compute_reward(batch)
+
+                            keys_to_pop = set(gen_baseline_output.batch.keys())
+                            if rm_scores is not None:
+                                keys_to_pop.update(rm_scores.batch.keys())
+                            new_batch.pop(batch_keys=list(keys_to_pop))
+
+                            new_batch.batch["reward_baselines"] = reward_baseline_tensor
+
+                            del rm_scores, gen_baseline_batch, gen_baseline_output
+
+                    self.checkpoint_manager.sleep_replicas()
+
+                    with marked_timer("reward", timing_raw, color="yellow"):
+                        # compute reward model score
+                        if self.use_rm and "rm_scores" not in new_batch.batch.keys():
+                            batch_reward = self._compute_reward_colocate(new_batch)
+                            new_batch = new_batch.union(batch_reward)
+
+                            # extract reward_tensor and reward_extra_infos_dict for training
+                            reward_tensor, reward_extra_infos_dict = extract_reward(new_batch)
+                        else:
+                            reward_tensor, reward_extra_infos_dict = compute_reward(new_batch)
+
+                        self_distillation_data = self._maybe_build_self_distillation_batch(
+                            new_batch,
+                            reward_tensor,
+                            reward_extra_infos_dict,
+                        )
+                        if self_distillation_data is not None:
+                            self_distillation_batch, self_distillation_metrics = self_distillation_data
+                            new_batch = new_batch.union(self_distillation_batch)
+                            metrics.update(self_distillation_metrics)
+
+                        new_batch.batch["token_level_scores"] = reward_tensor
+
+                        if reward_extra_infos_dict:
+                            new_batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+
+                    if self.config.algorithm.filter_groups.enable:
+                        # we skip to the next generation batch
+                        metric_name = self.config.algorithm.filter_groups.metric
+                        if metric_name == "seq_final_reward":
+                            # Turn to numpy for easier filtering
+                            new_batch.non_tensor_batch["seq_final_reward"] = new_batch.batch["token_level_scores"].sum(dim=-1).numpy()
+                        elif metric_name == "seq_reward":
+                            new_batch.non_tensor_batch["seq_reward"] = new_batch.batch["token_level_scores"].sum(dim=-1).numpy()
+
+                        # Collect the sequence reward for each trajectory
+                        prompt_uid2metric_vals = defaultdict(list)
+                        for uid, metric_val in zip(new_batch.non_tensor_batch["uid"], new_batch.non_tensor_batch[metric_name], strict=True):
+                            prompt_uid2metric_vals[uid].append(metric_val)
+
+                        prompt_uid2metric_std = {}
+                        for prompt_uid, metric_vals in prompt_uid2metric_vals.items():
+                            prompt_uid2metric_std[prompt_uid] = np.std(metric_vals)
+
+                        kept_prompt_uids = [uid for uid, std in prompt_uid2metric_std.items() if std > 0 or len(prompt_uid2metric_vals[uid]) == 1]
+                        num_prompt_in_batch += len(kept_prompt_uids)
+
+                        kept_traj_idxs = []
+                        for idx, traj_from_prompt_uid in enumerate(new_batch.non_tensor_batch["uid"]):
+                            if traj_from_prompt_uid in kept_prompt_uids:
+                                kept_traj_idxs.append(idx)
+
+                        new_batch = new_batch[kept_traj_idxs]
+                        batch = new_batch if batch is None else DataProto.concat([batch, new_batch])
+
+                        prompt_bsz = self.config.data.train_batch_size
+                        if num_prompt_in_batch < prompt_bsz:
+                            print(f"{num_prompt_in_batch=} < {prompt_bsz=}")
+                            max_num_gen_batches = self.config.algorithm.filter_groups.max_num_gen_batches
+                            if max_num_gen_batches <= 0 or num_gen_batches < max_num_gen_batches:
+                                print(f"{num_gen_batches=}. Keep generating...")
+                                self.gen_steps += 1
+                                is_last_step = self.global_steps >= self.total_training_steps
+
+                                # update weights from trainer to rollout
+                                with marked_timer("update_weights", timing_raw, color="red"):
+                                    self.checkpoint_manager.update_weights(self.global_steps)
+                                continue
+                            raise ValueError(
+                                f"{num_gen_batches=} >= {max_num_gen_batches=}.  Generated too many. Please check if your data are too difficult."
+                                " You could also try set max_num_gen_batches=0 to enable endless trials."
+                            )
+                        # Align the batch
+                        traj_bsz = self.config.data.train_batch_size * self.config.actor_rollout_ref.rollout.n
+                        batch = batch[:traj_bsz]
+                    else:
+                        batch = new_batch
+
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
                     # which won't affect the advantage calculation (since it's based on uid),
@@ -756,58 +850,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
 
                     # compute global_valid tokens
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
-
-                    if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
-                        with marked_timer("gen_max", timing_raw, color="purple"):
-                            gen_baseline_batch = deepcopy(batch)
-                            gen_baseline_batch.meta_info["do_sample"] = False
-                            if curr_step_profile:
-                                self.async_rollout_manager.start_profile()
-                            gen_baseline_output = self.async_rollout_manager.generate_sequences(gen_baseline_batch)
-                            self.checkpoint_manager.sleep_replicas()
-                            if curr_step_profile:
-                                self.async_rollout_manager.stop_profile()
-                            batch = batch.union(gen_baseline_output)
-                            # compute reward model score on batch
-                            rm_scores = None
-                            if self.use_rm and "rm_scores" not in batch.batch.keys():
-                                batch_reward = self._compute_reward_colocate(batch)
-                                batch = batch.union(batch_reward)
-
-                                # Compute or extract reward for REMAX baseline
-                                reward_baseline_tensor = batch.batch["rm_scores"].sum(dim=-1)
-                            else:
-                                reward_baseline_tensor, _ = compute_reward(batch)
-
-                            keys_to_pop = set(gen_baseline_output.batch.keys())
-                            if rm_scores is not None:
-                                keys_to_pop.update(rm_scores.batch.keys())
-                            batch.pop(batch_keys=list(keys_to_pop))
-
-                            batch.batch["reward_baselines"] = reward_baseline_tensor
-
-                            del rm_scores, gen_baseline_batch, gen_baseline_output
-
-                    with marked_timer("reward", timing_raw, color="yellow"):
-                        # compute reward model score
-                        if self.use_rm and "rm_scores" not in batch.batch.keys():
-                            batch_reward = self._compute_reward_colocate(batch)
-                            batch = batch.union(batch_reward)
-
-                            # extract reward_tensor and reward_extra_infos_dict for training
-                            reward_tensor, reward_extra_infos_dict = extract_reward(batch)
-                        else:
-                            reward_tensor, reward_extra_infos_dict = compute_reward(batch)
-
-                        self_distillation_data = self._maybe_build_self_distillation_batch(
-                            batch,
-                            reward_tensor,
-                            reward_extra_infos_dict,
-                        )
-                        if self_distillation_data is not None:
-                            self_distillation_batch, self_distillation_metrics = self_distillation_data
-                            batch = batch.union(self_distillation_batch)
-                            metrics.update(self_distillation_metrics)
 
                     # recompute old_log_probs
                     # Operating Mode Selection:
@@ -874,11 +916,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                             batch = batch.union(values)
 
                     with marked_timer("adv", timing_raw, color="brown"):
-                        # we combine with rule-based rm
-                        batch.batch["token_level_scores"] = reward_tensor
 
-                        if reward_extra_infos_dict:
-                            batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
                         from ajet import bp; bp("KL")  # pylint: disable=no-name-in-module, import-outside-toplevel # noqa
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:
@@ -892,9 +930,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         # Compute rollout correction: IS weights, rejection sampling, and metrics
                         # Only runs in decoupled mode (computes once per batch using stable π_old)
                         # In bypass mode, this is skipped - actor computes metrics from evolving π_θ vs π_rollout
-                        if (
-                            rollout_corr_config is not None and "rollout_log_probs" in batch.batch and not bypass_recomputing_logprobs  # Only in decoupled mode
-                        ):
+                        if rollout_corr_config is not None and "rollout_log_probs" in batch.batch and not bypass_recomputing_logprobs:  # Only in decoupled mode
                             from verl.trainer.ppo.rollout_corr_helper import \
                                 compute_rollout_correction_and_add_to_batch  # pylint: disable=import-outside-toplevel
 
@@ -904,16 +940,10 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                             metrics.update(is_metrics)
 
                         # compute advantages, executed on the driver process
-                        norm_adv_by_std_in_grpo = self.config.algorithm.get(
-                            "norm_adv_by_std_in_grpo", True
-                        )  # GRPO adv normalization factor
+                        norm_adv_by_std_in_grpo = bool(self.config.algorithm.get("norm_adv_by_std_in_grpo", True))  # GRPO adv normalization factor
 
                         # [AJET] episode-scope advantage baseline (disabled by default)
-                        advantage_estimation_episode_level = bool(
-                            self.config.ajet.trainer_common.get(
-                                "advantage_estimation_episode_level", False
-                            )
-                        )
+                        advantage_estimation_episode_level = bool(self.config.ajet.trainer_common.get("advantage_estimation_episode_level", False))
 
                         batch = compute_advantage(
                             batch,
@@ -982,8 +1012,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
 
                 # validate
                 if (
-                    self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
-                    and (not self.config.ajet.enable_swarm_mode)
+                    self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0) and (not self.config.ajet.enable_swarm_mode)
                 ):
                     with marked_timer("testing", timing_raw, color="green"):
                         val_metrics: dict = self._validate()
@@ -1046,6 +1075,11 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                 if isinstance(self.train_dataloader.sampler, AbstractCurriculumSampler):
                     self.train_dataloader.sampler.update(batch=batch)
 
+                metrics["train/num_gen_batches"] = num_gen_batches
+                batch = None
+                num_prompt_in_batch = 0
+                num_gen_batches = 0
+
                 verl_tracker.log(data=metrics, step=self.global_steps)
                 train_print_to_markdown_file_path = self.config.ajet.trainer_common.train_print_to_markdown_file_path
                 if train_print_to_markdown_file_path:
@@ -1055,6 +1089,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         f.write('\n')
                 progress_bar.update(1)
                 self.global_steps += 1
+                self.gen_steps += 1
 
                 if (
                     hasattr(self.config.actor_rollout_ref.actor, "profiler") and self.config.actor_rollout_ref.actor.profiler.tool == "torch_memory"
@@ -1120,7 +1155,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
             }
             logger.info(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
-            self.checkpoint_manager.update_weights(self.global_steps)
             main_val_dataset = self.get_val_dataset()
 
             logger.info("Starting validate rollout")
@@ -1132,7 +1166,7 @@ class AjetRayPPOTrainer(RayPPOTrainer):
             )
             logger.info("Completed validate rollout")
             test_output_gen_batch = self.parallel_env.to_dataproto(context_tracker_arr)
-            self._sleep_rollout_replicas()
+            self.checkpoint_manager.sleep_replicas()
 
             # Store original inputs
             input_ids = test_output_gen_batch.batch["prompts"]
@@ -1161,6 +1195,8 @@ class AjetRayPPOTrainer(RayPPOTrainer):
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
             sample_uids.extend(test_batch.non_tensor_batch["uid"])
+
+            self.checkpoint_manager.update_weights(self.global_steps)
 
             # collect num_turns of each prompt
             if "__num_turns__" in test_batch.non_tensor_batch:

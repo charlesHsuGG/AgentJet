@@ -681,17 +681,11 @@ class VerlRolloutManager(DynamicRolloutManager):
             prompt_ids.append(torch.tensor(sample.prompt_ids, dtype=torch.int))
             response_ids.append(torch.tensor(sample.response_ids, dtype=torch.int))
 
-            prompt_attention_mask.append(
-                torch.tensor(sample.prompt_attention_mask, dtype=torch.int)
-            )
-            response_attention_mask.append(
-                torch.tensor(sample.response_attention_mask, dtype=torch.int)
-            )
+            prompt_attention_mask.append(torch.tensor(sample.prompt_attention_mask, dtype=torch.int))
+            response_attention_mask.append(torch.tensor(sample.response_attention_mask, dtype=torch.int))
 
             prompt_position_ids.append(torch.tensor(sample.prompt_position_ids, dtype=torch.int))
-            response_position_ids.append(
-                torch.tensor(sample.response_position_ids, dtype=torch.int)
-            )
+            response_position_ids.append(torch.tensor(sample.response_position_ids, dtype=torch.int))
 
             prompt_loss_mask.append(torch.tensor(sample.prompt_loss_mask, dtype=torch.int))
             response_loss_mask.append(torch.tensor(sample.response_loss_mask, dtype=torch.int))
@@ -705,86 +699,45 @@ class VerlRolloutManager(DynamicRolloutManager):
             step_reward_scores.append(sample.step_reward)  # append reward scalar
             reward_extra_info_list.append(sample.reward_extra)
 
-        max_prompt_length_this_batch = max([p.shape[-1] for p in prompt_ids])
-        assert 0 < max_prompt_length_this_batch <= self.config.ajet.data.max_prompt_length
-        max_response_length_this_batch = max([p.shape[-1] for p in response_ids])
-        assert 0 < max_response_length_this_batch <= self.config.ajet.data.max_response_length
+        # max_prompt_length_this_batch = max([p.shape[-1] for p in prompt_ids])
+        # assert 0 < max_prompt_length_this_batch <= self.config.ajet.data.max_prompt_length
+        # max_response_length_this_batch = max([p.shape[-1] for p in response_ids])
+        # assert 0 < max_response_length_this_batch <= self.config.ajet.data.max_response_length
+        max_prompt_length_this_batch = self.config.ajet.data.max_prompt_length
+        max_response_length_this_batch = self.config.ajet.data.max_response_length
 
-        prompt_ids = pad_sequence(
-            prompt_ids,
-            batch_first=True,
-            padding_value=self.pad_token_id,
-            padding_side="left",
-        )
-        prompt_attention_mask = pad_sequence(
-            prompt_attention_mask,
-            batch_first=True,
-            padding_value=0,
-            padding_side="left",
-        )
-        prompt_position_ids = pad_sequence(
-            prompt_position_ids,
-            batch_first=True,
-            padding_value=0,
-            padding_side="left",
-        )
-        prompt_loss_mask = pad_sequence(
-            prompt_loss_mask,
-            batch_first=True,
-            padding_value=0,
-            padding_side="left",
-        )
+        prompt_ids = pad_sequence(prompt_ids, batch_first=True, padding_value=self.pad_token_id, padding_side="left")
+        prompt_attention_mask = pad_sequence(prompt_attention_mask, batch_first=True, padding_value=0, padding_side="left")
+        prompt_position_ids = pad_sequence(prompt_position_ids, batch_first=True, padding_value=0, padding_side="left")
+        prompt_loss_mask = pad_sequence(prompt_loss_mask, batch_first=True, padding_value=0, padding_side="left")
 
-        prompt_ids = pad_sequence_to_length(
-            prompt_ids,
-            max_prompt_length_this_batch,
-            self.pad_token_id,
-            left_pad=True,
-        )
-        prompt_attention_mask = pad_sequence_to_length(
-            prompt_attention_mask,
-            max_prompt_length_this_batch,
-            0,
-            left_pad=True,
-        )
-        prompt_position_ids = pad_sequence_to_length(
-            prompt_position_ids, max_prompt_length_this_batch, 0, left_pad=True
-        )
-        prompt_loss_mask = pad_sequence_to_length(
-            prompt_loss_mask, max_prompt_length_this_batch, 0, left_pad=True
-        )
+        prompt_ids = pad_sequence_to_length(prompt_ids, max_prompt_length_this_batch, self.pad_token_id, left_pad=True)
+        prompt_attention_mask = pad_sequence_to_length(prompt_attention_mask, max_prompt_length_this_batch, 0, left_pad=True)
+        prompt_position_ids = pad_sequence_to_length(prompt_position_ids, max_prompt_length_this_batch, 0, left_pad=True)
+        prompt_loss_mask = pad_sequence_to_length(prompt_loss_mask, max_prompt_length_this_batch, 0, left_pad=True)
 
         response_ids = pad_sequence(response_ids, batch_first=True, padding_value=self.pad_token_id)
-        response_attention_mask = pad_sequence(
-            response_attention_mask, batch_first=True, padding_value=0
-        )
+        response_attention_mask = pad_sequence(response_attention_mask, batch_first=True, padding_value=0)
         response_loss_mask = pad_sequence(response_loss_mask, batch_first=True, padding_value=0)
         response_logprobs = pad_sequence(response_logprobs, batch_first=True, padding_value=0.0)
 
-        response_ids = pad_sequence_to_length(
-            response_ids, max_response_length_this_batch, self.pad_token_id
-        )
-        response_attention_mask = pad_sequence_to_length(
-            response_attention_mask, max_response_length_this_batch, 0
-        )
-        response_loss_mask = pad_sequence_to_length(
-            response_loss_mask, max_response_length_this_batch, 0
-        )
-        response_logprobs = pad_sequence_to_length(
-            response_logprobs, max_response_length_this_batch, 0.0
-        )
+        response_ids = pad_sequence_to_length(response_ids, max_response_length_this_batch, self.pad_token_id)
+        response_attention_mask = pad_sequence_to_length(response_attention_mask, max_response_length_this_batch, 0)
+        response_loss_mask = pad_sequence_to_length(response_loss_mask, max_response_length_this_batch, 0)
+        response_logprobs = pad_sequence_to_length(response_logprobs, max_response_length_this_batch, 0.0)
 
-        delta_position_id = (
-            torch.arange(1, response_ids.size(1) + 1, device=response_ids.device)
-            .unsqueeze(0)
-            .repeat(len(samples), 1)
-        )
+        delta_position_id = torch.arange(1, response_ids.size(1) + 1, device=response_ids.device).unsqueeze(0).repeat(len(samples), 1)
         response_position_ids = prompt_position_ids[:, -1:] + delta_position_id
 
         input_ids = torch.cat((prompt_ids, response_ids), dim=-1)
         attention_mask = torch.cat((prompt_attention_mask, response_attention_mask), dim=-1)
         position_ids = torch.cat((prompt_position_ids, response_position_ids), dim=-1)
         loss_mask = torch.cat((prompt_loss_mask, response_loss_mask), dim=-1)
+
+        assert input_ids.shape[-1] == self.config.ajet.data.max_prompt_length + self.config.ajet.data.max_response_length, (
+            f"input id length must same as max length: {self.config.ajet.data.max_prompt_length + self.config.ajet.data.max_response_length}, "
+            f"Input size: {input_ids.shape}"
+        )
 
         batch = TensorDict(
             {

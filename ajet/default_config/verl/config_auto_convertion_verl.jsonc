@@ -25,7 +25,7 @@
     "ajet.trainer_common.optim.num_cycles": "actor_rollout_ref.actor.optim.num_cycles",
     "ajet.trainer_common.optim.lr_scheduler_type": "actor_rollout_ref.actor.optim.lr_scheduler_type",
     "ajet.trainer_common.optim.zero_indexed_step": "actor_rollout_ref.actor.optim.zero_indexed_step",
-    "ajet.trainer_common.optim.grad_clip": "actor_rollout_ref.actor.optim.grad_clip",
+    "ajet.trainer_common.optim.grad_clip": "actor_rollout_ref.actor.optim.clip_grad",
     "ajet.trainer_common.use_kl_loss": "actor_rollout_ref.actor.use_kl_loss",
     "ajet.trainer_common.kl_loss_coef": "actor_rollout_ref.actor.kl_loss_coef",
     "ajet.trainer_common.kl_loss_type": "actor_rollout_ref.actor.kl_loss_type",

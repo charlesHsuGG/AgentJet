@@ -90,7 +90,7 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
 
             assert isinstance(item, dict), f"Unsupported non-dict item in message content: {item}. Full message: {msg}"
 
-            if ("text" not in item):
+            if "text" not in item:
                 logger.warning(
                     f"Non-text content in message content detected: {item}. Ignoring."
                 )
@@ -195,10 +195,10 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
 
         return timeline
 
-    def step_prepare(self, messages: List[dict], tools: List = [], timeline_uuid: str = ""):
+    def step_prepare(self, messages: List[dict], tools: List[dict] | None = None, timeline_uuid: str = ""):
         disable_toolcalls = self.config.ajet.rollout.force_disable_toolcalls
-        tools = self.preprocess_tools_field(tools, disable_toolcalls=disable_toolcalls)
-        timeline = self.step_spawn_timeline(messages, tools, disable_toolcalls)
+        tools = self.preprocess_tools_field(tools or [], disable_toolcalls=disable_toolcalls)
+        timeline = self.step_spawn_timeline(messages, tools or [], disable_toolcalls)
 
         # check token overflow
         converted_message = self.to_role_content(timeline)
@@ -218,11 +218,7 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
         return context_safe, token_overflow, info, converted_message, custom_sampling_params, tools
 
     def step_track(
-        self,
-        llm_output,
-        context_safe,
-        converted_message: List[dict],
-        tools: List = [],
+        self, llm_output, context_safe, converted_message: List[dict], tools: List[dict] | None = None,
         timeline_uuid: str = "",
     ):
         assert timeline_uuid in self.timeline_cache, "Timeline UUID not found in cache. Please ensure `step_prepare` is called before `step_track`."
@@ -237,7 +233,7 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                 compute_string_madness(
                     completion=(
                         f"<think>\n{llm_output["reasoning_content"]}\n</think>" + llm_output["content"]
-                    ) if llm_output["reasoning_content"] else llm_output["content"],
+                    ) if llm_output["reasoning_content"] else "<think>\n\n</think>" + llm_output["content"],
                     checklist=self.config.ajet.rollout.compute_madness_checklist,
                 )
                 < 0.0
@@ -248,21 +244,14 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
 
         # add llm_output to timeline and save
         llm_ext_msg = ExtendedMessage(
-            author="llm",
-            role="assistant",
-            reasoning_content=llm_output["reasoning_content"],
-            content=llm_output["content"],
-            token_generator="manual",
-            tool_calls=tool_calls,
+            author="llm", role="assistant", reasoning_content=llm_output["reasoning_content"],
+            content=llm_output["content"], token_generator="manual", tool_calls=tool_calls,
             tokenizer=self.tokenizer,
         )
         input_msg_ref = copy.deepcopy(converted_message)
-        (
-            precise_manual_token,
-            token_logprob_arr,
-            loss_mask,
-            lack_normal_eos,
-        ) = self.get_token_inc_from_llm_response(input_msg_ref, llm_output, tools=tools)
+        precise_manual_token, token_logprob_arr, loss_mask, lack_normal_eos = self.get_token_inc_from_llm_response(
+            input_msg_ref, llm_output, tools=tools or []
+        )
         llm_ext_msg.token_arr = precise_manual_token
         llm_ext_msg.token_logprob_arr = token_logprob_arr
         llm_ext_msg.lack_normal_eos = lack_normal_eos
@@ -472,10 +461,10 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                 # otherwise, we throw a warning (do not worry, this causes almost no influence in the training)
                 print_dict(
                     {
-                        "expected_prompt_text": prompt_text_split[j],       # from llm_output["prompt_text"], converted directly from messages using apply_chat_template, passway (messages->apply_chat_template->text)
-                        "current_prompt_text": current_prompt_text[j],      # history prompt text converted from token_arr to text using tokenizer, passway (messages->extended_message->incremental apply_chat_template->token_arr->text)
-                        "expected_token_ids": token_array,             # from llm_output["prompt_token_ids"], passway (messages->apply_chat_template->token)
-                        "current_token_ids": tracker_token_array,           # from previous_ext_context[j].token_arr, passway (messages->extended_message->incremental apply_chat_template->token_arr)
+                        "expected_prompt_text": prompt_text_split[j],  # from llm_output["prompt_text"], converted directly from messages using apply_chat_template, passway (messages->apply_chat_template->text)
+                        "current_prompt_text": current_prompt_text[j],  # history prompt text converted from token_arr to text using tokenizer, passway (messages->extended_message->incremental apply_chat_template->token_arr->text)
+                        "expected_token_ids": token_array,  # from llm_output["prompt_token_ids"], passway (messages->apply_chat_template->token)
+                        "current_token_ids": tracker_token_array,  # from previous_ext_context[j].token_arr, passway (messages->extended_message->incremental apply_chat_template->token_arr)
                     },
                     mod="exception",
                     header="Prompt token ids mismatch (fixing drift by `token_arr=token_array`).",
@@ -587,14 +576,11 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                 setattr(self, "group_tokenized_cache", result)
             return result
 
-    def get_context_token_num_and_safety(self, ext_messages: List[ExtendedMessage], tools: List = []) -> Tuple[bool, int]:  # type: ignore
+    def get_context_token_num_and_safety(self, ext_messages: List[ExtendedMessage], tools: List | None = None) -> Tuple[bool, int]:  # type: ignore
         dict_messages = self.to_role_content(ext_messages)
         prompt_text = ajet_apply_chat_template(
-            tokenizer=self.tokenizer,
-            conversation=dict_messages,
-            tools=tools,
-            add_generation_prompt=True,
-            tokenize=False,
+            tokenizer=self.tokenizer, conversation=dict_messages, tools=tools or [],
+            add_generation_prompt=True, tokenize=False,
         )
         length = len(self.tokenizer(prompt_text, return_tensors="pt", padding=False)["input_ids"][0])  # type: ignore
         max_response_length = self.config.ajet.rollout.max_response_length_in_one_turn
@@ -606,15 +592,10 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
         else:
             return False, length
 
-    def check_context_token_num_safe(
-        self, messages: List, tools: List = []
-    ) -> Tuple[bool, bool, str]:
+    def check_context_token_num_safe(self, messages: List, tools: List | None = None) -> Tuple[bool, bool, str]:
         prompt_text = ajet_apply_chat_template(
-            tokenizer=self.tokenizer,
-            conversation=messages,
-            tools=tools,
-            add_generation_prompt=True,
-            tokenize=False,
+            tokenizer=self.tokenizer, conversation=messages, tools=tools or [],
+            add_generation_prompt=True, tokenize=False,
         )
         prompt_token_length = len(self.tokenizer(prompt_text, return_tensors="pt", padding=False)["input_ids"][0])  # type: ignore
         max_response_length_in_one_turn = self.config.ajet.rollout.max_response_length_in_one_turn
@@ -637,6 +618,9 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                 f"safe[{prompt_token_length} < {max_model_len} - {max_response_length_in_one_turn}]",
             )
         else:
-            ret = (False, token_overflow,
-                   f"token_overflow(prompt_token_length.{prompt_token_length}>=max_model_len.{max_model_len}-max_response_length_in_one_turn.{max_response_length_in_one_turn})")
+            ret = (
+                False, token_overflow,
+                f"token_overflow(prompt_token_length.{prompt_token_length}>=max_model_len.{max_model_len}-"
+                f"max_response_length_in_one_turn.{max_response_length_in_one_turn})"
+            )
         return ret

@@ -130,9 +130,14 @@ class AsyncLlmBridge(object):
             if "content" not in message:
                 message["content"] = ""
 
+            preview_content = message['content'][:50]
+            if message.get("reasoning_content", None):
+                preview_content = f"<think>\n{message['reasoning_content'][:50]}...\n</think>\n{preview_content}..."
+
             logger.info(
                 f"Received response from server {server_address} with finish_reason: {completion.choices[0].finish_reason}, "
-                f"tool_calls: {message.get('tool_calls', [])}, content: {message['content'][:50]}..."
+                f"tool_calls: {message.get('tool_calls', [])}, content: {preview_content}, "
+                f"tokens: {[token_logprob.token_id for token_logprob in token_logprobs[:50]]}"
             )
 
             usage = {

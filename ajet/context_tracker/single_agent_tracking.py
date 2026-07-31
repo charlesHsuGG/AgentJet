@@ -1,10 +1,12 @@
 import copy
-import re
+import random
 from collections import defaultdict
 from typing import List, Tuple
 
+import numpy as np
 import torch
 from loguru import logger
+from verl.utils.model import compute_position_id_with_mask
 
 from ajet.context_tracker.base_tracker import (BaseTracker, ExtendedMessage,
                                                replace_token_ids)
@@ -56,8 +58,11 @@ class SingleAgentContextTracker(BaseTracker):
         return input_id_increment, msg
 
     # generate token
-    def get_token_inc_from_llm_response(self, input_msg_ref, llm_output, tools: List[dict] = []) -> Tuple[List[int], List[int], List[int], bool]:
-        llm_output_role_content = {"role": llm_output["role"], "reasoning_content": llm_output["reasoning_content"], "content": llm_output["content"]}
+    def get_token_inc_from_llm_response(self, input_msg_ref, llm_output, tools: List[dict] | None = None) -> Tuple[List[int], List[int], List[int], bool]:
+        llm_output_role_content = {
+            "role": llm_output["role"], "reasoning_content": llm_output["reasoning_content"] if llm_output["reasoning_content"] else "/no_thinking",
+            "content": llm_output["content"]
+        }
         if llm_output.get("tool_calls", None):
             llm_output_role_content.update({"tool_calls": llm_output.get("tool_calls", [])})
 
@@ -67,14 +72,14 @@ class SingleAgentContextTracker(BaseTracker):
                 tokenizer=self.tokenizer,
                 conversation=input_msg_ref,
                 tokenize=False,
-                tools=tools,
+                tools=tools or [],
                 add_generation_prompt=False,
             ),
             ajet_apply_chat_template(
                 tokenizer=self.tokenizer,
                 conversation=input_msg_ref + [llm_output_role_content],
                 tokenize=False,
-                tools=tools,
+                tools=tools or [],
                 add_generation_prompt=False,
             ),
         )
@@ -166,7 +171,7 @@ class SingleAgentContextTracker(BaseTracker):
         # --------------- compute step level reward ---------------
         step_reward = step_reward_base  # reward scalar
         if self.already_mad_flag:
-            step_reward = self.config.ajet.rollout.agent_madness_reward
+            step_reward = self.config.ajet.rollout.agent_madness_reward * step_reward
             self.reward_structure.madness = -1
 
         return step_reward
@@ -221,15 +226,11 @@ class SingleAgentContextTracker(BaseTracker):
 
         if len(sample_arr) > max_num_group:
             logger.warning(f"Warning: allow {max_num_group} groups, but got {len(sample_arr)} groups")
-            import random
-
             sample_arr = random.sample(sample_arr, max_num_group)  # preserve max_num_group groups
 
         return sample_arr
 
-    def tokenize_steps(
-        self, ext_steps: List[ExtendedMessage], index: int, total_steps: int
-    ) -> dict:
+    def tokenize_steps(self, ext_steps: List[ExtendedMessage], index: int, total_steps: int) -> dict:
         """
         Create an Experience object from the current conversation context.
 
@@ -243,7 +244,6 @@ class SingleAgentContextTracker(BaseTracker):
             - Handles position IDs and reward scores
             - Truncates output IDs as needed
         """
-        from verl.utils.model import compute_position_id_with_mask
 
         ext_steps = self.remove_last_non_llm_msg(ext_steps)
 
@@ -289,8 +289,8 @@ class SingleAgentContextTracker(BaseTracker):
 
         # if [prompt_token | response_token] is splited at a place where loss_mask == 0,
         # move the split index forward
-        MAX_FORWARD_STEPS = 100
-        for i in range(MAX_FORWARD_STEPS):
+        max_forward_steps = 100
+        for i in range(max_forward_steps):
             if loss_mask[split_prompt_response_index] == 0:
                 split_prompt_response_index += 1
             else:
@@ -321,6 +321,10 @@ class SingleAgentContextTracker(BaseTracker):
         response_loss_mask = loss_mask[split_prompt_response_index:]
         response_logprobs = input_logprobs[split_prompt_response_index:]
 
+        # logger.info(f"[Full] text: {self.tokenizer.decode(input_ids)}")
+        # logger.info(f"[Prompt] text: {self.tokenizer.decode(prompt_ids)}")
+        # logger.info(f"[Response] text: {self.tokenizer.decode(response_ids)}")
+
         tracker_tokenized = {}
         tracker_tokenized["input_ids"] = input_ids
         tracker_tokenized["prompt_ids"] = prompt_ids
@@ -350,14 +354,13 @@ class SingleAgentContextTracker(BaseTracker):
 
     @staticmethod
     def compute_reference_advantage(tracker_array: List):
-        import numpy as np
 
         task2tracker = defaultdict(list)
         for tracker in tracker_array:
             task2tracker[tracker.task_id] += [tracker]
 
         # compute group normalized step_advantage (just for logging purpose)
-        for task_id, tracker_list in task2tracker.items():
+        for _, tracker_list in task2tracker.items():
             tracker_reward = []
 
             # compute in-group mean and std
@@ -376,11 +379,8 @@ class SingleAgentContextTracker(BaseTracker):
             # compute advantage
             for tracker in tracker_list:
                 tracker.reward_structure.step_advantage = []
-                for i in range(len(tracker.reward_structure.step_reward_arr)):
-                    tracker.reward_structure.step_advantage += [
-                        (tracker.reward_structure.step_reward_arr[i] - reward_mean)
-                        / (reward_std + 1e-6)
-                    ]
+                for step_reward in tracker.reward_structure.step_reward_arr:
+                    tracker.reward_structure.step_advantage += [(step_reward - reward_mean) / (reward_std + 1e-6)]
 
         # compute simple advantage (uneven rollout sample count) (just for logging purpose)
         for task_id, tracker_list in task2tracker.items():
@@ -395,11 +395,8 @@ class SingleAgentContextTracker(BaseTracker):
                 reward_std = float(np.std(tracker_reward, ddof=1))
             for tracker in tracker_list:
                 tracker.reward_structure.step_advantage_simple = []
-                for i in range(len(tracker.reward_structure.step_reward_arr)):
-                    tracker.reward_structure.step_advantage_simple += [
-                        (tracker.reward_structure.step_reward_arr[i] - reward_mean)
-                        / (reward_std + 1e-6)
-                    ]
+                for step_reward in tracker.reward_structure.step_reward_arr:
+                    tracker.reward_structure.step_advantage_simple += [(step_reward - reward_mean) / (reward_std + 1e-6)]
         return
 
     def get_generation_prompt_token(self):
@@ -412,16 +409,13 @@ class SingleAgentContextTracker(BaseTracker):
                 add_generation_prompt=False,
                 tokenize=False,
             ),
-            re.sub(
-                r"<think>\n?(\n?<\/think>\n?\n?)?$", "",
-                ajet_apply_chat_template(
-                    tokenizer=self.tokenizer,
-                    conversation=dummy_msg,
-                    tools=[],
-                    add_generation_prompt=True,
-                    tokenize=False,
-                )
-            ),
+            ajet_apply_chat_template(
+                tokenizer=self.tokenizer,
+                conversation=dummy_msg,
+                tools=[],
+                add_generation_prompt=True,
+                tokenize=False,
+            )
         )
         self.generation_prompt = self.tokenizer.decode(self.generation_prompt_token)
         return self.generation_prompt_token

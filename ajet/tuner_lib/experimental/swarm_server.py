@@ -31,7 +31,7 @@ from ajet.utils.sync_train_code import extract_ajet_zip
 VERBOSE_LOG_TTL_SECONDS = 30.0
 VERBOSE_LOG_MAX_ENTRIES = 50
 
-RCVTIMEO = 2 * 1000
+RCVTIMEO = 20 * 1000
 RCVTIMEO_OUT = 300 * 1000
 RCVTIMEO_WAIT_N = RCVTIMEO_OUT // RCVTIMEO
 
@@ -102,7 +102,7 @@ def register_enable_swarm_mode_routes(
             return
         zmq_addr = shared_mem_dict[ep_key(episode_uuid)].zmq_listen_result_addr
         socket = zmq_context.socket(zmq.REQ)
-        socket.setsockopt(zmq.RCVTIMEO, RCVTIMEO)  # 2 seconds recv timeout
+        socket.setsockopt(zmq.RCVTIMEO, RCVTIMEO)  # 20 seconds recv timeout
         socket.connect(zmq_addr)
 
         # <send to>

@@ -93,21 +93,20 @@ def replace_token_ids(
         token_container[:_begin_index] + precise_token_center + token_container[_end_index:]
     )
     final_logprob = (
-        [INVALID_LOG_PROB_VALUE] * _begin_index
-        + precise_logprob_center
-        + logprob_eos_tail
-        + [INVALID_LOG_PROB_VALUE] * (len(token_container) - _end_index - len(logprob_eos_tail))
+        [INVALID_LOG_PROB_VALUE] * _begin_index + precise_logprob_center + logprob_eos_tail + [INVALID_LOG_PROB_VALUE] * (
+            len(token_container) - _end_index - len(logprob_eos_tail)
+        )
     )
     loss_mask = (
-        [0] * _begin_index
-        + [1] * len(precise_logprob_center)
-        + [1] * len(logprob_eos_tail)
-        + [0] * (len(token_container) - _end_index - len(logprob_eos_tail))
+        [0] * _begin_index + [1] * len(precise_logprob_center) + [1] * len(logprob_eos_tail) + [0] * (
+            len(token_container) - _end_index - len(logprob_eos_tail)
+        )
     )
     return final_token_ids, final_logprob, loss_mask, lack_normal_eos
 
 
 class BaseTracker(object):
+
     def __init__(self, config, tokenizer, workflow_task: WorkflowTask, **kwargs):
 
         # disable read only mode
@@ -150,11 +149,7 @@ class BaseTracker(object):
         self.reward_structure: Union[Reward, None] = None
         self.already_mad_flag: bool = False
 
-        assert (
-            self.config.ajet.data.max_prompt_length
-            + self.config.ajet.data.max_response_length
-            <= max_model_len
-        )
+        assert self.config.ajet.data.max_prompt_length + self.config.ajet.data.max_response_length <= max_model_len
 
     def reset(self):
         # disable read only mode

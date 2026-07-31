@@ -98,7 +98,7 @@ def get_app(max_fastapi_threads: int = 512, enable_swarm_mode=False, shared_mem_
             logger.info(f"[server] episode_uuid: {episode_uuid} | Received new chat completion request (inside thread)")
 
         socket = context.socket(zmq.REQ)
-        socket.setsockopt(zmq.RCVTIMEO, 6 * 1000)  # 6 second recv timeout
+        socket.setsockopt(zmq.RCVTIMEO, 30 * 1000)  # 30 second recv timeout
         socket.connect(f"{episode_address}")
         if DEBUG:
             logger.info(f"[server] episode_uuid: {episode_uuid} | connect done")

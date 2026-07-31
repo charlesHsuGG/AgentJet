@@ -42,7 +42,7 @@ ajet:
     # send signal to terminate context tracing when LLM is losing control
     agent_madness_termination: True # terminate_after_gone_mad
     # punish the LLM when it is detected as lost control
-    agent_madness_reward: -1.0
+    agent_madness_reward: 0.1
 
     # max response length in one turn
     max_response_length_in_one_turn: 4096

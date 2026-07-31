@@ -59,22 +59,23 @@ def blackout_everything_after_eos_including_eos(mask, token_arr, eos_token_id):
 
 
 class ExtendedMessage:
+
     def __init__(
         self,
         author,
         role="assistant",
         reasoning_content=None,
         content="",
-        token_arr=[],
+        token_arr=None,
         token_begin_index=-1,
         token_end_index=-1,
         tokenizer: PreTrainedTokenizer = None,  # type: ignore
         token_generator="manual",
         build_from_uuid="",
-        tools=[],
-        tool_calls=[],
+        tools=None,
+        tool_calls=None,
         tool_call_id="",
-        token_logprob_arr=[],
+        token_logprob_arr=None,
         name="",    # preserved field, not used currently
         first_message=False,
         before_last_query=True,   # whether this message is before the last user query in the conversation, used for auto tokenization logic
@@ -83,8 +84,8 @@ class ExtendedMessage:
         self.role = role
         self.reasoning_content = reasoning_content
         self.content = content
-        self.token_arr = token_arr
-        self.token_logprob_arr = token_logprob_arr
+        self.token_arr = token_arr or []
+        self.token_logprob_arr = token_logprob_arr or []
         self.token_begin_index = token_begin_index
         self.token_end_index = token_end_index
         self.invalid_log_prob_value = INVALID_LOG_PROB_VALUE
@@ -124,7 +125,7 @@ class ExtendedMessage:
             raise ValueError(
                 "The first message is supposed to be the system message, check program bugs, or remove this warning."
             )
-        
+
         # avoid qwen 3 chat template jinja render no user query error
         render_chat_template = None
         if (self.first_message and self.role == "system") or (self.before_last_query and self.role == "assistant"):
@@ -242,26 +243,29 @@ class ExtendedMessage:
                     assert len(self.manual_loss_mask_override) == len(msg_token_mask)
                     assert all(a == b for a, b in zip(self.manual_loss_mask_override, msg_token_mask))
                 except AssertionError:
+                    preview_content = self.content[:100]
+                    if self.reasoning_content:
+                        preview_content = f"<think>\n{self.reasoning_content[:100]}...\n</think>\n{preview_content}..."
                     error_msg = (
                         "Manual loss mask override mismatch | "
                         f"author={self.author} role={self.role} uuid={self.uuid} | "
                         f"override_len={len(self.manual_loss_mask_override)} mask_len={len(msg_token_mask)} | "
-                        f"token_arr_len={len(self.token_arr)} content_preview={self.content[:100]!r} | "
+                        f"token_arr_len={len(self.token_arr)} content_preview={preview_content!r} | "
                         f"token_arr={self.token_arr[:100]} | blackout_token_combo={blackout_token_combo[:100]} | "
                         f"override={self.manual_loss_mask_override[:100]} | generated_mask={msg_token_mask[:100]}"
                     )
                     logger.bind(exception=True).error(error_msg)
                     log_dir = "./loss_mask_exception"
                     os.makedirs(log_dir, exist_ok=True)
-                    with open(os.path.join(log_dir, "exception.log"), "a") as f:
+                    with open(os.path.join(log_dir, "exception.log"), "a", encoding="utf-8") as f:
                         f.write(f"\n{'=' * 80}\n")
                         f.write(f"[{datetime.now().isoformat()}]\n")
                         f.write(f"{error_msg}\n")
                         f.write(f"Traceback:\n{traceback.format_exc()}\n")
             return msg_token_mask
-        else:
-            msg_token_mask = [0] * len(self.token_arr)
-            return msg_token_mask
+
+        msg_token_mask = [0] * len(self.token_arr)
+        return msg_token_mask
 
     def get_inc_simple(self, text_frag_from, text_frag_to, tokenizer):
         """
@@ -280,8 +284,8 @@ class ExtendedMessage:
         FN_DEBUG = False
         if FN_DEBUG:
             overlap_length = 0
-            for i in range(len(token_ids_acc)):
-                if i < len(token_ids_acc) and input_ids[i] == token_ids_acc[i]:
+            for i, token_id_acc in enumerate(token_ids_acc):
+                if i < len(token_ids_acc) and input_ids[i] == token_id_acc:
                     overlap_length += 1
                 else:
                     break
@@ -345,10 +349,7 @@ class ExtendedMessage:
             # re-compute token_arr
             auto_tokenize_targets = []
             for msg in group:
-                auto_tokenize_target = {
-                    "role": msg.role,
-                    "content": msg.content,
-                }
+                auto_tokenize_target = {"role": msg.role, "content": msg.content}
                 if msg.reasoning_content:
                     auto_tokenize_target.update({"reasoning_content": msg.reasoning_content})
                 if msg.tool_calls:
@@ -359,18 +360,12 @@ class ExtendedMessage:
 
             merged.token_arr, _ = merged.get_inc_simple(
                 text_frag_from=ajet_apply_chat_template(
-                    tokenizer=tokenizer,
-                    conversation=dummy_msg,
-                    tokenize=False,
-                    tools=merged.tools,
+                    tokenizer=tokenizer, conversation=dummy_msg, tokenize=False, tools=merged.tools,
                     add_generation_prompt=False,
                 ),
                 text_frag_to=ajet_apply_chat_template(
-                    tokenizer,
-                    conversation=dummy_msg + auto_tokenize_targets,
-                    tokenize=False,
-                    tools=merged.tools,
-                    add_generation_prompt=False,
+                    tokenizer, conversation=dummy_msg + auto_tokenize_targets, tokenize=False,
+                    tools=merged.tools, add_generation_prompt=False,
                 ),
                 tokenizer=tokenizer,
             )

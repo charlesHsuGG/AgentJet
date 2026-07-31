@@ -130,7 +130,11 @@ def compute_reward_metrics(reward_stats_list: List[Dict[str, Any]], prefix: str 
 
     reward_details = {key: [d[key] for d in reward_stats_list] for key in reward_stats_list[0] if isinstance(reward_stats_list[0][key], (int, float))}
     for key, rewards in reward_details.items():
-        metrics[f"{prefix}rewards/{key}"] = float(np.mean(rewards))
+        rewards = [reward for reward in rewards if reward != -100.0]
+        if rewards:
+            metrics[f"{prefix}rewards/{key}_min"] = float(np.nanmin(rewards))
+            metrics[f"{prefix}rewards/{key}_mean"] = float(np.nanmean(rewards))
+            metrics[f"{prefix}rewards/{key}_max"] = float(np.nanmax(rewards))
     return metrics
 
 
