@@ -41,7 +41,7 @@ class ResourceKeeper(object):
                 self.env.release_instance(self.workflow_task.episode_uuid)
         except Exception as e:
             logger.bind(exception=True).exception(
-                f"encounter exception in env_worker.release_instance~ error={e.args}"
+                f"encounter exception in env_worker.release_instance~ error={e}"
             )
             raise e
 
@@ -92,7 +92,7 @@ class ResourceKeeper(object):
                 self.workflow_task.task.main_query = query
             except Exception as e:
                 logger.bind(exception=True).exception(
-                    f"encounter exception in env_worker.create_instance~ error={e.args}"
+                    f"encounter exception in env_worker.create_instance~ error={e}"
                 )
                 if self.env is not None:
                     self.env.release_instance(self.workflow_task.episode_uuid)
@@ -118,7 +118,7 @@ class ResourceKeeper(object):
                     init_messages = [{"role": "user", "content": task.main_query}]
             except Exception as e:
                 logger.bind(exception=True).exception(
-                    f"encounter exception in env_worker.create_instance~ error={e.args}"
+                    f"encounter exception in env_worker.create_instance~ error={e}"
                 )
                 if self.env is not None:
                     self.env.release_instance(self.workflow_task.episode_uuid)

@@ -132,15 +132,15 @@ class BaseRolloutManager:
                 return None  # type: ignore
             except TestSuccessException as e:
                 logger.success(
-                    f"env_worker.agent_flow completed with TestSuccessException: {e.args}"
+                    f"env_worker.agent_flow completed with TestSuccessException: {e}"
                 )
                 raise e
             except TestFailException as e:
-                logger.error(f"env_worker.agent_flow failed with TestFailException: {e.args}")
+                logger.error(f"env_worker.agent_flow failed with TestFailException: {e}")
                 raise e
             except Exception as e:
                 logger.bind(exception=True).exception(
-                    f"encounter exception in env_worker.agent_flow error={e.args}"
+                    f"encounter exception in env_worker.agent_flow error={e}"
                 )
                 raise e
 

@@ -760,8 +760,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
 
                             del rm_scores, gen_baseline_batch, gen_baseline_output
 
-                    self.checkpoint_manager.sleep_replicas()
-
                     with marked_timer("reward", timing_raw, color="yellow"):
                         # compute reward model score
                         if self.use_rm and "rm_scores" not in new_batch.batch.keys():
@@ -825,10 +823,6 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                                 print(f"{num_gen_batches=}. Keep generating...")
                                 self.gen_steps += 1
                                 is_last_step = self.global_steps >= self.total_training_steps
-
-                                # update weights from trainer to rollout
-                                with marked_timer("update_weights", timing_raw, color="red"):
-                                    self.checkpoint_manager.update_weights(self.global_steps)
                                 continue
                             raise ValueError(
                                 f"{num_gen_batches=} >= {max_num_gen_batches=}.  Generated too many. Please check if your data are too difficult."
@@ -838,7 +832,10 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         traj_bsz = self.config.data.train_batch_size * self.config.actor_rollout_ref.rollout.n
                         batch = batch[:traj_bsz]
                     else:
-                        batch = new_batch
+                        traj_bsz = self.config.data.train_batch_size * self.config.actor_rollout_ref.rollout.n
+                        batch = new_batch[:traj_bsz]
+
+                    self.checkpoint_manager.sleep_replicas()
 
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
