@@ -4,9 +4,8 @@ from loguru import logger
 from omegaconf import DictConfig
 
 from ajet.schema.task import WorkflowTask
-from ajet.utils.env_service_client.env_client_ng import (
-    EnvClient as EnvClientNg,
-)
+from ajet.utils.env_service_client.env_client_ng import \
+    EnvClient as EnvClientNg
 
 
 class ResourceKeeper(object):
@@ -224,7 +223,7 @@ class BaseGymEnv(object):
                 obs = env_output["state"]["content"]
 
         terminate = env_output["is_terminated"]
-        return obs, reward, terminate, info # type: ignore
+        return obs, reward, terminate, info  # type: ignore
 
     def reset(self) -> str:
         """Reset gym environment."""
