@@ -47,7 +47,7 @@ def get_runtime_env(config, is_trinity: bool = False) -> dict:
             "AJET_CONFIG_REDIRECT": os.getenv("AJET_CONFIG_REDIRECT", ""),
             "AJET_DAT_INTERCHANGE_PORT": os.getenv("AJET_DAT_INTERCHANGE_PORT", data_interchange_port),
             "MASTER_NODE_IP": os.getenv("MASTER_NODE_IP", master_node_ip),
-            "RAY_memory_usage_threshold": os.getenv("RAY_memory_usage_threshold", "0.98")
+            "RAY_memory_usage_threshold": os.getenv("RAY_memory_usage_threshold", "0.98"),
         }
     }
 

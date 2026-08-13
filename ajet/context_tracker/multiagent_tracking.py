@@ -164,8 +164,6 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
             if msg["role"] == "user":
                 previous_message_encounter_user_role = True
 
-            before_last_query_flag = msg["role"] == "assistant" and i < len(messages) - 1 and any((m["role"] == "user") for m in messages[i+1:])
-
             msg_content = cast(str, msg["content"])
 
             assert msg_content or msg["tool_calls"], f"Message content or tool_calls is None. Message: {msg}"
@@ -175,7 +173,7 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                 ExtendedMessage(
                     author=author,
                     role=msg["role"],
-                    reasoning_content=(msg["reasoning_content"] if "reasoning_content" in msg else None),
+                    reasoning_content=msg.get("reasoning_content", None),
                     content=msg_content,
                     tokenizer=self.tokenizer,
                     tools=tools,
@@ -184,10 +182,10 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
                     token_generator="auto",
                     name=(msg["name"] if "name" in msg else ""),
                     first_message=(i == 0),
-                    before_last_query=before_last_query_flag,
+                    before_last_query=True,
                 )
             ]
-            if msg.get("reasoning_content", None) is not None and not previous_message_encounter_user_role:
+            if "<think>" in msg_content and not previous_message_encounter_user_role:
                 logger.warning(
                     "Warning! Message content contains <think> tag, but no prior message has `user` role! This is not a common scenario. "
                     "Please check your agent loop carefully."
@@ -244,7 +242,7 @@ class MultiAgentContextTracker(SingleAgentContextTracker):
 
         # add llm_output to timeline and save
         llm_ext_msg = ExtendedMessage(
-            author="llm", role="assistant", reasoning_content=llm_output["reasoning_content"],
+            author="llm", role="assistant", reasoning_content=llm_output.get("reasoning_content", None),
             content=llm_output["content"], token_generator="manual", tool_calls=tool_calls,
             tokenizer=self.tokenizer,
         )

@@ -21,6 +21,17 @@ def get_sample_params(mode, config):
             logprobs=1,
             extra_body={"top_k": config.ajet.rollout.top_k} if config.ajet.rollout.top_k is not None else {},  # Only include top_k if it's set
         )
+    elif config.ajet.rollout.name == "sglang":
+        # VLLM uses max_tokens instead of max_new_tokens
+        sampling_params = dict(
+            n=1,
+            max_completion_tokens=config.ajet.rollout.max_response_length_in_one_turn - response_length_eps,
+            min_tokens=1,  # Must output at least 1 token.
+            temperature=config.ajet.rollout.temperature,
+            top_p=config.ajet.rollout.top_p,
+            logprobs=1,
+            extra_body={"top_k": config.ajet.rollout.top_k} if config.ajet.rollout.top_k is not None else {},  # Only include top_k if it's set
+        )
     else:
         sampling_params = dict(
             n=1,

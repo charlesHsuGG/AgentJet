@@ -159,12 +159,7 @@ class AsyncLlmBridge(object):
                 "tokens": token_logprobs,
             }
 
-        async def llm_chat_remote(
-            messages: List[Dict[str, str]],
-            custom_sampling_params: dict = {},
-            tools=[],
-            request_id: str = "",
-        ) -> dict:
+        async def llm_chat_remote(messages: List[Dict[str, str]], custom_sampling_params: dict = {}, tools=[], request_id: str = "") -> dict:
             updated_sampling_params = {}
             if sampling_params:
                 updated_sampling_params.update(sampling_params)
@@ -187,12 +182,7 @@ class AsyncLlmBridge(object):
                     time.sleep(i + 1)
             return output_message[-1]  # type: ignore
 
-        async def llm_chat_trinity(
-            messages: List[Dict[str, str]],
-            custom_sampling_params: dict = {},
-            tools=[],
-            request_id: str = "",
-        ) -> dict:
+        async def llm_chat_trinity(messages: List[Dict[str, str]], custom_sampling_params: dict = {}, tools=[], request_id: str = "") -> dict:
             async def main():
                 updated_sampling_params = {}
                 if sampling_params:
@@ -333,13 +323,7 @@ class OpenaiLlmProxyWithTracker(object):
         llm_output = await self.run_infer(messages, tools, tool_choice, **kwargs)
         return convert_llm_proxy_response_to_oai_response(llm_output)
 
-    async def run_infer(
-        self,
-        messages: List[dict],
-        tools: List = [],
-        tool_choice: str = "auto",      # always auto
-        **kwargs,
-    ) -> Dict:
+    async def run_infer(self, messages: List[dict], tools: List = [], tool_choice: str = "auto", **kwargs) -> Dict:
         # generate timeline uuid
         timeline_uuid = uuid.uuid4().hex
 

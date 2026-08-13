@@ -60,7 +60,7 @@ class SingleAgentContextTracker(BaseTracker):
     # generate token
     def get_token_inc_from_llm_response(self, input_msg_ref, llm_output, tools: List[dict] | None = None) -> Tuple[List[int], List[int], List[int], bool]:
         llm_output_role_content = {
-            "role": llm_output["role"], "reasoning_content": llm_output["reasoning_content"] if llm_output["reasoning_content"] else "/no_thinking",
+            "role": llm_output["role"], "reasoning_content": llm_output["reasoning_content"] if llm_output["reasoning_content"].strip() else "/no_thinking",
             "content": llm_output["content"]
         }
         if llm_output.get("tool_calls", None):

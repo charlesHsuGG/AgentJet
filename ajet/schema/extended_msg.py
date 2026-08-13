@@ -111,8 +111,6 @@ class ExtendedMessage:
 
         if token_generator == "auto":
             self.before_last_query = before_last_query
-            if self.before_last_query:
-                self.reasoning_content = None
             self.token_arr = self.auto_tokenize(
                 tokenizer=tokenizer,
                 tools=tools,
@@ -128,14 +126,13 @@ class ExtendedMessage:
 
         # avoid qwen 3 chat template jinja render no user query error
         render_chat_template = None
-        if (self.first_message and self.role == "system") or (self.before_last_query and self.role == "assistant"):
-            if isinstance(tokenizer, ProcessorMixin):
-                chat_template = tokenizer.tokenizer.get_chat_template()
-            else:
-                chat_template = tokenizer.get_chat_template()
-            render_chat_template = chat_template.replace(
-                "{{- raise_exception('No user query found in messages.') }}", "{# {{- raise_exception('No user query found in messages.') }} #}"
-            )
+        if isinstance(tokenizer, ProcessorMixin):
+            chat_template = tokenizer.tokenizer.get_chat_template()
+        else:
+            chat_template = tokenizer.get_chat_template()
+        render_chat_template = chat_template.replace(
+            "{{- raise_exception('No user query found in messages.') }}", "{# {{- raise_exception('No user query found in messages.') }} #}"
+        )
         if not self.first_message:
             self.token_arr = self.auto_tokenize_non_first_message(tokenizer=tokenizer, tools=tools, render_chat_template=render_chat_template)
         else:
