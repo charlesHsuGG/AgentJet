@@ -75,7 +75,22 @@ class AsyncLlmBridge(object):
             if sampling_params:
                 updated_sampling_params.update(sampling_params)
             if custom_sampling_params:
+                max_tokens = updated_sampling_params.get("max_completion_tokens", None) or updated_sampling_params.get("max_tokens", None)
+                if "max_completion_tokens" in custom_sampling_params:
+                    custom_max_tokens = custom_sampling_params["max_completion_tokens"]
+                    if custom_max_tokens:
+                        custom_sampling_params["max_completion_tokens"] = min(custom_max_tokens, max_tokens)
+                    else:
+                        custom_sampling_params.pop("max_completion_tokens")
+                elif "max_tokens" in custom_sampling_params:
+                    custom_max_tokens = custom_sampling_params["max_tokens"]
+                    if custom_max_tokens:
+                        custom_sampling_params["max_tokens"] = min(custom_max_tokens, max_tokens)
+                    else:
+                        custom_sampling_params.pop("max_tokens")
                 updated_sampling_params.update(custom_sampling_params)
+
+            updated_sampling_params.update({"logprobs": 1, "return_token_ids": True, "return_tokens_as_token_ids": True})
 
             # input_messages = copy.deepcopy(messages)
             # # the input (prompt) sequence as text
@@ -88,8 +103,6 @@ class AsyncLlmBridge(object):
             # )
             # # the input (prompt) sequence as input_ids
             # prompt_token_ids = self.tokenizer(prompt_text)["input_ids"]
-
-            updated_sampling_params.update({"logprobs": 1, "return_token_ids": True, "return_tokens_as_token_ids": True})
 
             server_address = min(self.address_mapping, key=self.address_mapping.get)
             client = AsyncOpenAI(base_url=f"http://{server_address}/v1", api_key=os.environ.get("OPENAI_API_KEY", "token-abc123"))
@@ -139,6 +152,7 @@ class AsyncLlmBridge(object):
                 f"tool_calls: {message.get('tool_calls', [])}, content: {preview_content}, "
                 f"tokens: {[token_logprob.token_id for token_logprob in token_logprobs[:50]]}"
             )
+            self.address_mapping[server_address] += 1
 
             usage = {
                 "prompt_tokens": completion.usage.prompt_tokens if completion.usage else None,
@@ -289,23 +303,14 @@ class OpenaiLlmProxyWithTracker(object):
         self.llm_inference_fn = llm_inference_fn
         self.config = config
 
-    async def chat_completion_request(
-        self,
-        req: "ChatCompletionRequest",
-        timeline_uuid: str,
-        agent_name: str,
-        target_tag: str,
-        episode_uuid: str,
-    ):
+    async def chat_completion_request(self, req: "ChatCompletionRequest", timeline_uuid: str, agent_name: str, target_tag: str, episode_uuid: str):
         from openai.types.chat.chat_completion import ChatCompletion
         req_as_dict = req.model_dump(mode='json')
 
+        messages, tools, tool_choice = req_as_dict.pop("messages"), req_as_dict.pop("tools"), req_as_dict.pop("tool_choice", "auto")
+
         # infer + process with context tracker
-        llm_output = await self.run_infer(
-            messages=req_as_dict["messages"],
-            tools=req_as_dict["tools"],
-            tool_choice="auto",
-        )
+        llm_output = await self.run_infer(messages=messages, tools=tools, tool_choice=tool_choice, **req_as_dict)
         # convert to OpenAI ChatCompletion format
         response: ChatCompletion = convert_llm_proxy_response_to_oai_response(llm_output)
         # this is an important id assignment
@@ -313,29 +318,21 @@ class OpenaiLlmProxyWithTracker(object):
         assert isinstance(response, ChatCompletion)
         return response
 
-    async def __call__(
-        self,
-        messages: List[dict],
-        tools: List = [],
-        tool_choice: str = "auto",
-        **kwargs,
-    ) -> ChatResponse:
+    async def __call__(self, messages: List[dict], tools: List | None = None, tool_choice: str = "auto", **kwargs) -> ChatResponse:
         llm_output = await self.run_infer(messages, tools, tool_choice, **kwargs)
         return convert_llm_proxy_response_to_oai_response(llm_output)
 
-    async def run_infer(self, messages: List[dict], tools: List = [], tool_choice: str = "auto", **kwargs) -> Dict:
+    async def run_infer(self, messages: List[dict], tools: List | None = None, tool_choice: str = "auto", **kwargs) -> Dict:
         # generate timeline uuid
         timeline_uuid = uuid.uuid4().hex
 
         # prepare context tracker, check context safety
         (
-            context_safe,
-            token_overflow,
-            info,
-            converted_message,
-            custom_sampling_params,
-            tools,
+            context_safe, token_overflow, info,
+            converted_message, custom_sampling_params, tools,
         ) = self.context_tracker.step_prepare(messages, tools, timeline_uuid=timeline_uuid)
+
+        custom_sampling_params.update({"tool_choice": tool_choice, **kwargs})
 
         # if context not safe to infer further
         if not context_safe:

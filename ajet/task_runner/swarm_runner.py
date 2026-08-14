@@ -186,7 +186,7 @@ class SwarmRunner(BaseAgentRunner):
 
         # the most important thing is to fix task_id to client task_id, set task_id to workflow_task and context_tracker task_id
         assert "task_id" in workflow_output.metadata, "workflow_output.metadata must contain task_id"
-        task_id = workflow_output.metadata.get("task_id", "")
+        task_id = workflow_output.metadata.get("task_id", "")  # pylint: disable=no-member
         workflow_task.task_id = task_id
         context_tracker.task_id = task_id
 
