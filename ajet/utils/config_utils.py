@@ -208,11 +208,11 @@ def align_parameter_safe_guard(config: dict, backbone: str) -> dict:
                 f"LoRA training (lora_rank={lora_rank}) requires load_format='safetensors', "
                 f"but got load_format='{load_format}'. Please set `ajet.lora.load_format: safetensors` in your config."
             )
-        if lora_rank > 0 and not layered_summon:
-            raise ValueError(
-                f"LoRA training (lora_rank={lora_rank}) requires layered_summon=True, "
-                f"but got layered_summon={layered_summon}. Please set `ajet.lora.layered_summon: true` in your config."
-            )
+        # if lora_rank > 0 and not layered_summon:
+        #     raise ValueError(
+        #         f"LoRA training (lora_rank={lora_rank}) requires layered_summon=True, "
+        #         f"but got layered_summon={layered_summon}. Please set `ajet.lora.layered_summon: true` in your config."
+        #     )
 
     # special: trinity train_batch_size
     if backbone == "trinity":

@@ -311,8 +311,8 @@ class AgentJetJob:
         if self.lora_rank > 0:
             if self.lora_load_format != "safetensors":
                 raise ValueError(f"When lora_rank > 0, lora_load_format must be 'safetensors', got '{self.lora_load_format}'")
-            if not self.layered_summon:
-                raise ValueError("When lora_rank > 0, layered_summon must be True")
+            # if not self.layered_summon:
+            #     raise ValueError("When lora_rank > 0, layered_summon must be True")
             if self.lr is None:
                 raise ValueError("lr should be provided for lora training")
             if self.lr <= 1e-5:
