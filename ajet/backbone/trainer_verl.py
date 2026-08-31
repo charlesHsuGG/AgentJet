@@ -20,15 +20,15 @@ from copy import deepcopy
 from pprint import pprint
 from typing import Any, Dict, List, Optional, Tuple
 
-import hydra
 import numpy as np
 import torch
+import verl
 from beast_logger import print_dict
 from loguru import logger
+from packaging import version
 from tqdm import tqdm
 from verl import DataProto
-from verl.experimental.agent_loop.agent_loop import AsyncLLMServerManager
-from verl.experimental.dataset.sampler import AbstractCurriculumSampler
+# from verl.experimental.dataset.sampler import AbstractCurriculumSampler
 from verl.trainer.config import AlgoConfig
 from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
@@ -41,10 +41,8 @@ from verl.trainer.ppo.ray_trainer import (RayPPOTrainer, apply_kl_penalty,
 from verl.trainer.ppo.reward import extract_reward
 from verl.trainer.ppo.utils import Role
 from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
-from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
 from verl.utils.metric import reduce_metrics
-from verl.utils.rollout_skip import RolloutSkip
 
 from ajet.backbone.warm_up import warm_up_process
 from ajet.context_tracker.single_agent_tracking import \
@@ -415,120 +413,27 @@ class AjetRayPPOTrainer(RayPPOTrainer):
     Slightly modified from RayPPOTrainer in verl.
     """
 
-    # #######################################
-    # init
-    # #######################################
-    def _validate_config(self):
-        config = self.config
-        # number of GPUs total
-        n_gpus = config.trainer.n_gpus_per_node * config.trainer.nnodes
-        minimal_bsz = n_gpus
-
-        # 1. Check total batch size for data correctness
-        real_train_batch_size = (
-            config.ajet.data.train_batch_size * config.ajet.rollout.num_repeat
-        )
-        assert real_train_batch_size % minimal_bsz == 0, (
-            f"real_train_batch_size ({real_train_batch_size}) must be divisible by minimal possible batch size "
-            f"({minimal_bsz})"
-        )
-
-        # A helper function to check "micro_batch_size" vs "micro_batch_size_per_gpu"
-        # We throw an error if the user sets both. The new convention is "..._micro_batch_size_per_gpu".
-        def check_mutually_exclusive(mbs, mbs_per_gpu, name: str):
-            """Validate mutually exclusive micro batch size configuration options.
-
-            Ensures that users don't set both deprecated micro_batch_size and
-            the new micro_batch_size_per_gpu parameters simultaneously.
-
-            Args:
-                mbs: Deprecated micro batch size parameter value.
-                mbs_per_gpu: New micro batch size per GPU parameter value.
-                name (str): Configuration section name for error messages.
-
-            Raises:
-                ValueError: If both parameters are set or neither is set.
-            """
-            settings = {
-                "reward_model": "micro_batch_size",
-                "actor_rollout_ref.ref": "log_prob_micro_batch_size",
-                "actor_rollout_ref.rollout": "log_prob_micro_batch_size",
-            }
-
-            if name in settings:
-                param = settings[name]
-                param_per_gpu = f"{param}_per_gpu"
-
-                if mbs is None and mbs_per_gpu is None:
-                    raise ValueError(
-                        f"[{name}] Please set at least one of '{name}.{param}' or '{name}.{param_per_gpu}'."
-                    )
-
-                if mbs is not None and mbs_per_gpu is not None:
-                    raise ValueError(
-                        f"[{name}] You have set both '{name}.{param}' AND '{name}.{param_per_gpu}'. Please remove "
-                        f"'{name}.{param}' because only '*_{param_per_gpu}' is supported (the former is deprecated)."
-                    )
-
-        # Actor validation done in ActorConfig.__post_init__ and validate()
-        try:
-            actor_config = omega_conf_to_dataclass(config.actor_rollout_ref.actor)
-            actor_config.validate(n_gpus, config.ajet.data.train_batch_size, config.actor_rollout_ref.model,)
-        except hydra.errors.InstantiationException as e:
-            raise ValueError("You are using an unsupported VERL version. Please read `documents/backbones.md`") from e
-        if not config.actor_rollout_ref.actor.use_dynamic_bsz:
-            if self.use_reference_policy:
-                # reference: log_prob_micro_batch_size vs. log_prob_micro_batch_size_per_gpu
-                check_mutually_exclusive(
-                    config.actor_rollout_ref.ref.log_prob_micro_batch_size,
-                    config.actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu,
-                    "actor_rollout_ref.ref",
-                )
-
-            #  The rollout section also has log_prob_micro_batch_size vs. log_prob_micro_batch_size_per_gpu
-            check_mutually_exclusive(
-                config.ajet.rollout.log_prob_micro_batch_size,
-                config.ajet.rollout.log_prob_micro_batch_size_per_gpu,
-                "actor_rollout_ref.rollout",
-            )
-
-        if self.config.algorithm.use_kl_in_reward and config.actor_rollout_ref.actor.use_kl_loss:
-            logger.warning("NOTICE: You have both enabled in-reward kl and kl loss.")
-
-        # critic
-        if self.use_critic:
-            critic_config = omega_conf_to_dataclass(config.critic)
-            critic_config.validate(n_gpus, config.ajet.data.train_batch_size)
-
-        if config.data.get("val_batch_size", None) is not None:
-            logger.warning(
-                "WARNING: val_batch_size is deprecated. Validation datasets are sent to inference engines as a whole batch, "
-                "which will schedule the memory themselves."
-            )
-
-        # check eval config
-        if config.ajet.rollout.val_kwargs.do_sample:
-            assert (
-                config.ajet.rollout.temperature > 0
-            ), "validation gen temperature should be greater than 0 when enabling do_sample"
-
-        logger.success("[validate_config] All configuration checks passed successfully!")
-
     def init_workers(self):
         super().init_workers()
 
         assert hasattr(self.async_rollout_manager, "agent_loop_workers")
         assert len(self.async_rollout_manager.agent_loop_workers) == 1, "Please set `num_workers = 1` in `ajet/default_config/verl/verl_default.yaml`"
 
-        servers = list(zip(self.async_rollout_manager.server_addresses, self.async_rollout_manager.server_handles, strict=True))
-        real_async_rollout_manager: AsyncLLMServerManager = AsyncLLMServerManager(
-            config=self.async_rollout_manager.config,
-            servers=servers,
-            load_balancer_handle=self.async_rollout_manager.global_load_balancer
-        )
+        if version.parse(verl.__version__) >= version.parse("0.8.0"):
+            async_llm_client = self.llm_server_manager.get_client()  # pylint: disable=no-member
+        else:
+            from verl.experimental.agent_loop.agent_loop import \
+                AsyncLLMServerManager  # pylint: disable=import-outside-toplevel, no-name-in-module
+
+            servers = list(zip(self.async_rollout_manager.server_addresses, self.async_rollout_manager.server_handles, strict=True))
+
+            async_llm_client: AsyncLLMServerManager = AsyncLLMServerManager(
+                config=self.async_rollout_manager.config, servers=servers,
+                load_balancer_handle=self.async_rollout_manager.global_load_balancer
+            )
 
         self.parallel_env = VerlRolloutManager(
-            config=self.config, async_rollout_manager=real_async_rollout_manager, max_parallel=self.config.ajet.rollout.max_env_worker,
+            config=self.config, async_llm_client=async_llm_client, max_parallel=self.config.ajet.rollout.max_env_worker,
             tokenizer=self.tokenizer,
         )
 
@@ -565,6 +470,11 @@ class AjetRayPPOTrainer(RayPPOTrainer):
 
         current_epoch = self.global_steps // len(self.train_dataloader)
 
+        if version.parse(verl.__version__) >= version.parse("0.8.0"):
+            from verl.utils.skip.skip_manager import SkipManager
+
+            SkipManager.init(self.config)
+
         # [oc] swarm_mode is not compatible with `val_before_train` and `val_only`
         assert not (self.config.ajet.enable_swarm_mode and (self.config.ajet.trainer_common.val_before_train or self.config.ajet.trainer_common.val_only)), \
             "swarm_mode is not compatible with `val_before_train` and `val_only`"
@@ -585,7 +495,10 @@ class AjetRayPPOTrainer(RayPPOTrainer):
             if self.config.ajet.trainer_common.val_only:
                 return
 
-        if self.config.actor_rollout_ref.rollout.get("skip_rollout", False):
+        if version.parse(verl.__version__) < version.parse("0.8.0") and self.config.actor_rollout_ref.rollout.get("skip_rollout", False):
+            from verl.utils.rollout_skip import \
+                RolloutSkip  # pylint: disable=import-outside-toplevel, no-name-in-module
+
             rollout_skip = RolloutSkip(self.config, self.async_rollout_manager)
             rollout_skip.wrap_generate_sequences()
 
@@ -771,15 +684,15 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                         else:
                             reward_tensor, reward_extra_infos_dict = compute_reward(new_batch)
 
-                        self_distillation_data = self._maybe_build_self_distillation_batch(
-                            new_batch,
-                            reward_tensor,
-                            reward_extra_infos_dict,
-                        )
-                        if self_distillation_data is not None:
-                            self_distillation_batch, self_distillation_metrics = self_distillation_data
-                            new_batch = new_batch.union(self_distillation_batch)
-                            metrics.update(self_distillation_metrics)
+                        # self_distillation_data = self._maybe_build_self_distillation_batch(
+                        #     new_batch,
+                        #     reward_tensor,
+                        #     reward_extra_infos_dict,
+                        # )
+                        # if self_distillation_data is not None:
+                        #     self_distillation_batch, self_distillation_metrics = self_distillation_data
+                        #     new_batch = new_batch.union(self_distillation_batch)
+                        #     metrics.update(self_distillation_metrics)
 
                         new_batch.batch["token_level_scores"] = reward_tensor
 
@@ -1068,9 +981,9 @@ class AjetRayPPOTrainer(RayPPOTrainer):
                 metrics.update(compute_variance_proxy_metrics(batch=batch, gradient_norm=gradient_norm))
                 # Note: mismatch metrics (KL, PPL, etc.) are collected at line 1179 after advantage computation
 
-                # this is experimental and may be changed/removed in the future in favor of a general-purpose one
-                if isinstance(self.train_dataloader.sampler, AbstractCurriculumSampler):
-                    self.train_dataloader.sampler.update(batch=batch)
+                # # this is experimental and may be changed/removed in the future in favor of a general-purpose one
+                # if isinstance(self.train_dataloader.sampler, AbstractCurriculumSampler):
+                #     self.train_dataloader.sampler.update(batch=batch)
 
                 metrics["train/num_gen_batches"] = num_gen_batches
                 batch = None

@@ -25,7 +25,7 @@ class BaseRolloutManager:
     def __init__(
         self,
         config: DictConfig,
-        async_rollout_manager,
+        async_llm_client,
         max_parallel: int,
         max_llm_retries: int = 3,
         tokenizer: PreTrainedTokenizer = None,  # type: ignore
@@ -38,7 +38,7 @@ class BaseRolloutManager:
         ----------
         config : DictConfig
             Configuration object containing rollout and experiment settings.
-        async_rollout_manager : Any
+        async_llm_client : Any
             Manager responsible for async LLM interactions.
         max_parallel : int
             Maximum number of parallel environment worker threads.
@@ -54,7 +54,7 @@ class BaseRolloutManager:
 
         self.llm_mode: Literal["local", "remote", "trinity"] = llm_mode
         self.config: DictConfig = config
-        self.async_rollout_manager = async_rollout_manager
+        self.async_llm_client = async_llm_client
         self.max_parallel: int = max_parallel
         self.max_llm_retries: int = max_llm_retries
         self.rollout_n = config.ajet.rollout.num_repeat
@@ -66,7 +66,7 @@ class BaseRolloutManager:
         self.enable_swarm_mode = config.ajet.enable_swarm_mode
         self.async_llm_bridge = AsyncLlmBridge(
             config=config,
-            async_rollout_manager=async_rollout_manager,
+            async_llm_client=async_llm_client,
             tokenizer=tokenizer,
             llm_mode=llm_mode,
             max_llm_retries=max_llm_retries,

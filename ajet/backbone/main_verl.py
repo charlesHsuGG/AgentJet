@@ -16,53 +16,70 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 """
 
 import atexit
+import logging
 import os
 import socket
 
 import hydra
 import ray
+import verl
 from omegaconf import DictConfig, OmegaConf
+from packaging import version
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 from torch.utils.data import Dataset as TorchDataset
-from verl.trainer import main_ppo
 from verl.trainer.ppo.utils import need_critic, need_reference_policy
 from verl.utils.config import validate_config
 from verl.utils.dataset.rl_dataset import collate_fn
-from verl.utils.device import is_cuda_available
+from verl.utils.device import auto_set_device, is_cuda_available
 
 # Create training and validation datasets.
 from ajet.backbone.warm_up import warm_up_process
 from ajet.task_reader import RouterTaskReader, task_to_standard_dataset
 from ajet.utils.core_env_vars import get_runtime_env
 from ajet.utils.launch_utils import set_loguru_default_color
-from ajet.utils.process_dataset import create_rl_sampler
+
+if version.parse(verl.__version__) >= version.parse("0.8.0"):
+    from verl.trainer.main_ppo_v0 import BaseTaskRunner as VerlTaskRunner
+    from verl.trainer.ppo.utils import create_rl_sampler
+else:
+    from verl.trainer.main_ppo import \
+        TaskRunner as VerlTaskRunner  # pylint: disable=no-name-in-module
+    from verl.trainer.main_ppo import \
+        create_rl_sampler  # pylint: disable=no-name-in-module
 
 set_loguru_default_color()
 
-
-@hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
-def main(config: DictConfig) -> None:
-    """Main entry point for PPO training with Hydra configuration management.
-
-    Args:
-        config: Hydra configuration dictionary containing training parameters.
-    """
-    run_ppo(config)
+logger = logging.getLogger(__name__)
+logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "INFO"))
 
 
 # Define a function to run the PPO-like training process
-def run_ppo(config: DictConfig, task_runner_class=None) -> None:
+def run_ppo(config: DictConfig, task_runner_class: VerlTaskRunner) -> None:
     """Initialize Ray cluster and run distributed PPO training process.
 
     Args:
         config: Training configuration object containing all necessary parameters
                 for distributed PPO training including Ray initialization settings,
                 model paths, and training hyperparameters.
+        task_runner_class: For recipe to change TaskRunner.
     """
     if config.ajet.enable_interchange_server:
         from ajet.tuner_lib.experimental.oai_model_server import \
             start_interchange_server
         start_interchange_server(config)
+
+    # Propagate determinism env vars from config before ray.init() so
+    # get_ppo_ray_runtime_env() forwards them to all Ray actors.
+    rollout_cfg = config.actor_rollout_ref.rollout
+    rm_rollout_cfg = config.reward.reward_model.rollout
+    if rollout_cfg.full_determinism or (config.reward.reward_model.enable and rm_rollout_cfg.full_determinism):
+        os.environ["VERL_FULL_DETERMINISM"] = "1"
+        os.environ["VLLM_BATCH_INVARIANT"] = "1"
+        os.environ["PYTHONHASHSEED"] = str(rollout_cfg.seed)
+
+    trainer_logger = config.trainer.get("logger", [])
+    if "rl_insight" in ([trainer_logger] if isinstance(trainer_logger, str) else trainer_logger or []):
+        os.environ["VERL_RL_INSIGHT_ENABLE"] = "1"
 
     # Check if Ray is not initialized
     if not ray.is_initialized():
@@ -75,10 +92,9 @@ def run_ppo(config: DictConfig, task_runner_class=None) -> None:
         runtime_env_kwargs = ray_init_kwargs.get("runtime_env", {})
 
         if config.transfer_queue.enable:
-            # Add runtime environment variables for transfer queue
-            runtime_env_vars = runtime_env_kwargs.get("env_vars", {})
-            runtime_env_vars["TRANSFER_QUEUE_ENABLE"] = "1"
-            runtime_env_kwargs["env_vars"] = runtime_env_vars
+            # Set this on the defaults, not on ray_init.runtime_env: the latter is a struct
+            # DictConfig, so adding an `env_vars` key to it raises ConfigKeyError.
+            default_runtime_env.setdefault("env_vars", {})["TRANSFER_QUEUE_ENABLE"] = "1"
 
         runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)
         ray_init_kwargs = OmegaConf.create({**ray_init_kwargs, "runtime_env": runtime_env})
@@ -134,7 +150,8 @@ def run_ppo(config: DictConfig, task_runner_class=None) -> None:
         ray.timeline(filename=timeline_json_file)
 
 
-class TaskRunner(main_ppo.TaskRunner):
+@ray.remote
+class TaskRunner(VerlTaskRunner):
     """Ray remote class for executing distributed PPO training tasks.
 
     This class encapsulates the main training logic and runs as a Ray remote actor
@@ -166,6 +183,8 @@ class TaskRunner(main_ppo.TaskRunner):
         self.add_critic_worker(config)
 
         self.add_reward_model_resource_pool(config)
+        if version.parse(verl.__version__) >= version.parse("0.8.0"):
+            self.add_teacher_model_resource_pool(config)
 
         # Add a reference policy worker if KL loss or KL reward is used.
         self.add_ref_policy_worker(config, actor_rollout_cls)
@@ -177,27 +196,37 @@ class TaskRunner(main_ppo.TaskRunner):
             use_critic=need_critic(config),
         )
 
-        # Download the checkpoint from HDFS to the local machine.
-        # `use_shm` determines whether to use shared memory, which could lead to faster model loading if turned on
-        local_path = copy_to_local(
-            config.ajet.model.path, use_shm=config.actor_rollout_ref.model.get("use_shm", False)
-        )
+        if version.parse(verl.__version__) >= version.parse("0.8.0"):
+            # Instantiate the tokenizer and processor from the model config.
+            from verl.utils.config import omega_conf_to_dataclass
+            from verl.workers.config import HFModelConfig
 
-        # Instantiate the tokenizer and processor.
-        from verl.utils import hf_processor, hf_tokenizer
+            model_config: HFModelConfig = omega_conf_to_dataclass(config.actor_rollout_ref.model)
+            tokenizer = model_config.tokenizer
+            # Used for multimodal LLM, could be None
+            processor = model_config.processor
+        else:
+            # Download the checkpoint from HDFS to the local machine.
+            # `use_shm` determines whether to use shared memory, which could lead to faster model loading if turned on
+            local_path = copy_to_local(
+                config.ajet.model.path, use_shm=config.actor_rollout_ref.model.get("use_shm", False)
+            )
 
-        from ajet.tokenizer.service import start_tokenizer_service
+            # Instantiate the tokenizer and processor.
+            from verl.utils import hf_processor, hf_tokenizer
 
-        trust_remote_code = config.data.get("trust_remote_code", False)
-        local_tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
-        # Cache hot tokenization calls (encode / decode / apply_chat_template)
-        # in a sidecar process; every other tokenizer attribute is served by
-        # the local instance directly.
-        tokenizer = start_tokenizer_service(
-            local_tokenizer, local_path, trust_remote_code=trust_remote_code
-        )
-        # Used for multimodal LLM, could be None
-        processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
+            from ajet.tokenizer.service import start_tokenizer_service
+
+            trust_remote_code = config.data.get("trust_remote_code", False)
+            local_tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
+            # Cache hot tokenization calls (encode / decode / apply_chat_template)
+            # in a sidecar process; every other tokenizer attribute is served by
+            # the local instance directly.
+            tokenizer = start_tokenizer_service(
+                local_tokenizer, local_path, trust_remote_code=trust_remote_code
+            )
+            # Used for multimodal LLM, could be None
+            processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
 
         resource_pool_manager = self.init_resource_pool_mgr(config)
 
@@ -205,6 +234,7 @@ class TaskRunner(main_ppo.TaskRunner):
 
         train_dataset: TorchDataset = task_to_standard_dataset(task_reader.generate_training_tasks)  # type: ignore
         val_dataset: TorchDataset = task_to_standard_dataset(task_reader.generate_validation_tasks)  # type: ignore
+
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
         from ajet.backbone.trainer_verl import AjetRayPPOTrainer
@@ -227,6 +257,30 @@ class TaskRunner(main_ppo.TaskRunner):
         trainer.init_workers()
         # Start the training process.
         trainer.fit()
+
+
+@hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
+def main(config: DictConfig) -> None:
+    """Main entry point for PPO training with Hydra configuration management.
+
+    Args:
+        config: Hydra configuration dictionary containing training parameters.
+    """
+    # Automatically set `config.trainer.device = npu` when running on Ascend NPU.
+    auto_set_device(config)
+
+    # validate config
+    validate_config(
+        config=config,
+        use_reference_policy=need_reference_policy(config),
+        use_critic=need_critic(config),
+    )
+
+    logger.warning(
+        "Legacy trainer `main_ppo_v0.py` is deprecated, and wil be removed in v0.9.0."
+        "Please set `trainer.use_v1=True` in config to use V1 trainer."
+    )
+    run_ppo(config, task_runner_class=TaskRunner)
 
 
 if __name__ == "__main__":

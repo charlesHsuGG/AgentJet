@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from beast_logger import print_dict, register_console
 from loguru import logger
+from packaging import version
 
 from ajet.utils.config_utils import align_parameters
 from ajet.utils.smart_daemon import LaunchCommandWhenAbsent
@@ -301,7 +302,8 @@ def verify_python_env(args, exp_config):
             time.sleep(5)
             raise ImportError(cause + " " + solution)
     elif args.backbone == "verl":
-        if not any([v in verl.__version__ for v in ["0.5.0.post", "0.5.0.dev", "0.7.0.post", "0.7.1", "0.8.0.dev"]]):  # you must install via `pip install -e .[verl]` to get every dependency right
+        if version.parse(verl.__version__) < version.parse("0.5.0"):
+            # you must install via `pip install -e .[verl]` to get every dependency right
             cause = "Python environment does not match current backbone 'verl'."
             solution = "Please `cd /path/to/project/AgentJet` and run `(uv) pip install -e .[verl]` to install the correct environment."
             print_dict(
@@ -421,9 +423,7 @@ def execute_training_process(
             assert os.path.exists(os.path.join(isolated_agentjet_dir, "ajet")), \
                 f"ISOLATED_AGENTJET_BASE_DIR is set to {isolated_agentjet_dir} but this path does not exist."
             env["PYTHONPATH"] = (
-                os.path.abspath(isolated_agentjet_dir)
-                + os.pathsep
-                + env.get("PYTHONPATH", "")
+                os.path.abspath(isolated_agentjet_dir) + os.pathsep + env.get("PYTHONPATH", "")
             )
             subprocess.run(cmd, check=True, cwd=isolated_agentjet_dir, env=env)
         else:

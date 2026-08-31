@@ -1,6 +1,4 @@
-import copy
 import os
-import time
 import uuid
 from typing import (TYPE_CHECKING, Any, Awaitable, Callable, Dict, List,
                     Literal, Union)
@@ -54,22 +52,22 @@ class AsyncLlmBridge(object):
     def __init__(
         self,
         config: DictConfig,
-        async_rollout_manager: Any,
+        async_llm_client: Any,
         tokenizer: Any,
         llm_mode: Literal["local", "remote", "trinity"] = "local",
         max_llm_retries: int = 3,
     ):
         self.config = config
-        self.async_rollout_manager = async_rollout_manager
+        self.async_llm_client = async_llm_client
         self.tokenizer = tokenizer
         self.llm_mode = llm_mode
         self.max_llm_retries = max_llm_retries
 
-        self.address_mapping = {server_address: 0 for server_address in self.async_rollout_manager._server_id_to_handle.keys()}
-
     def get_llm_inference_fn_async(self, sampling_params: dict = {}) -> Callable:  # noqa: C901
 
-        async def llm_chat_verl(messages: List[Dict[str, str]], custom_sampling_params: dict = {}, tools=[], request_id: str = "") -> dict:
+        async def llm_chat_remote(messages: List[Dict[str, str]], custom_sampling_params: dict = {}, tools=[], request_id: str = "") -> dict:
+
+            request_id = uuid.uuid4().hex
 
             updated_sampling_params = {}
             if sampling_params:
@@ -104,7 +102,7 @@ class AsyncLlmBridge(object):
             # # the input (prompt) sequence as input_ids
             # prompt_token_ids = self.tokenizer(prompt_text)["input_ids"]
 
-            server_address = min(self.address_mapping, key=self.address_mapping.get)
+            server_address = self.async_llm_client._acquire_server(request_id)[0]  # pylint: disable=protected_access
             client = AsyncOpenAI(base_url=f"http://{server_address}/v1", api_key=os.environ.get("OPENAI_API_KEY", "token-abc123"))
 
             logger.info(f"Sending request to server {server_address} with params: {updated_sampling_params}")
@@ -152,7 +150,6 @@ class AsyncLlmBridge(object):
                 f"tool_calls: {message.get('tool_calls', [])}, content: {preview_content}, "
                 f"tokens: {[token_logprob.token_id for token_logprob in token_logprobs[:50]]}"
             )
-            self.address_mapping[server_address] += 1
 
             usage = {
                 "prompt_tokens": completion.usage.prompt_tokens if completion.usage else None,
@@ -173,29 +170,6 @@ class AsyncLlmBridge(object):
                 "tokens": token_logprobs,
             }
 
-        async def llm_chat_remote(messages: List[Dict[str, str]], custom_sampling_params: dict = {}, tools=[], request_id: str = "") -> dict:
-            updated_sampling_params = {}
-            if sampling_params:
-                updated_sampling_params.update(sampling_params)
-            if custom_sampling_params:
-                updated_sampling_params.update(custom_sampling_params)
-            updated_sampling_params.update({"logprobs": 1, "return_tokens_as_token_ids": True})
-            input_messages = copy.deepcopy(messages)
-            for i in range(self.max_llm_retries):
-                try:
-                    # this function is defined in `ajet/backbone/main_vllm.py`
-                    output_message = await self.async_rollout_manager.submit_chat_completions_async(
-                        messages=input_messages,
-                        sampling_params=updated_sampling_params,
-                        tools=tools,
-                        request_id=request_id,
-                    )
-                    break
-                except Exception as e:
-                    logger.bind(exception=True).exception(f"rollout_server.{i} error: {e.args}")
-                    time.sleep(i + 1)
-            return output_message[-1]  # type: ignore
-
         async def llm_chat_trinity(messages: List[Dict[str, str]], custom_sampling_params: dict = {}, tools=[], request_id: str = "") -> dict:
             async def main():
                 updated_sampling_params = {}
@@ -206,8 +180,8 @@ class AsyncLlmBridge(object):
                 updated_sampling_params.pop("min_tokens")
 
                 if tools:
-                    response = await self.async_rollout_manager.chat.completions.create(
-                        model=self.async_rollout_manager.model_path,
+                    response = await self.async_llm_client.chat.completions.create(
+                        model=self.async_llm_client.model_path,
                         messages=messages,
                         logprobs=True,
                         tools=tools,
@@ -215,8 +189,8 @@ class AsyncLlmBridge(object):
                         **updated_sampling_params,
                     )
                 else:
-                    response = await self.async_rollout_manager.chat.completions.create(
-                        model=self.async_rollout_manager.model_path,
+                    response = await self.async_llm_client.chat.completions.create(
+                        model=self.async_llm_client.model_path,
                         messages=messages,
                         logprobs=True,
                         top_logprobs=0,
@@ -275,11 +249,9 @@ class AsyncLlmBridge(object):
                 ],
             }
 
-        if self.llm_mode == "remote":
-            return llm_chat_remote
         if self.llm_mode == "trinity":
             return llm_chat_trinity
-        return llm_chat_verl
+        return llm_chat_remote
 
 
 # ----------------------------------------------------------------------------------------------
