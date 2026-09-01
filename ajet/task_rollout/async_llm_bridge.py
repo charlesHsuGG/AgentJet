@@ -102,7 +102,7 @@ class AsyncLlmBridge(object):
             # # the input (prompt) sequence as input_ids
             # prompt_token_ids = self.tokenizer(prompt_text)["input_ids"]
 
-            server_address = self.async_llm_client._acquire_server(request_id)[0]  # pylint: disable=protected_access
+            server_address = (await self.async_llm_client._acquire_server(request_id))[0]  # pylint: disable=protected_access
             client = AsyncOpenAI(base_url=f"http://{server_address}/v1", api_key=os.environ.get("OPENAI_API_KEY", "token-abc123"))
 
             logger.info(f"Sending request to server {server_address} with params: {updated_sampling_params}")
