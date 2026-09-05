@@ -88,7 +88,8 @@ class AsyncLlmBridge(object):
                         custom_sampling_params.pop("max_tokens")
                 updated_sampling_params.update(custom_sampling_params)
 
-            updated_sampling_params.update({"logprobs": 1, "return_token_ids": True, "return_tokens_as_token_ids": True})
+            updated_sampling_params.update({"logprobs": 1})
+            updated_sampling_params.update(updated_sampling_params.get("extra_body", {}))
 
             # input_messages = copy.deepcopy(messages)
             # # the input (prompt) sequence as text
@@ -105,21 +106,21 @@ class AsyncLlmBridge(object):
             server_address = (await self.async_llm_client._acquire_server(request_id))[0]  # pylint: disable=protected_access
             client = AsyncOpenAI(base_url=f"http://{server_address}/v1", api_key=os.environ.get("OPENAI_API_KEY", "token-abc123"))
 
-            logger.info(f"Sending request to server {server_address} with params: {updated_sampling_params}")
+            tool_names = [tool["function"]["name"] for tool in tools] if tools else []
+            logger.info(f"Sending request to server {server_address} with tools: {tool_names} and params: {updated_sampling_params}")
 
-            if tools:
-                completion = await client.chat.completions.create(
-                    model=self.config.ajet.model.path,
-                    messages=messages,
-                    tools=tools,
-                    extra_body=updated_sampling_params,
-                )
-            else:
-                completion = await client.chat.completions.create(
-                    model=self.config.ajet.model.path,
-                    messages=messages,
-                    extra_body=updated_sampling_params,
-                )
+            model = updated_sampling_params.pop("model")
+            sample_num = updated_sampling_params.pop("n")
+            tool_choice = updated_sampling_params.pop("tool_choice")
+            response_format = updated_sampling_params.pop("response_format")
+            max_completion_tokens = updated_sampling_params.pop("max_tokens") or updated_sampling_params.pop("max_completion_tokens")
+            reasoning_effort = updated_sampling_params.pop("reasoning_effort")
+            completion = await client.chat.completions.create(
+                model=model, messages=messages, tools=tools or [], tool_choice=tool_choice,
+                reasoning_effort=reasoning_effort, response_format=response_format,
+                max_completion_tokens=max_completion_tokens, n=sample_num,
+                extra_body=updated_sampling_params,
+            )
 
             message = completion.choices[0].message.model_dump(exclude_unset=True, exclude_none=True)
 
