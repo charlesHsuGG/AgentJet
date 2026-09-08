@@ -73,20 +73,12 @@ class AsyncLlmBridge(object):
             if sampling_params:
                 updated_sampling_params.update(sampling_params)
             if custom_sampling_params:
-                max_tokens = updated_sampling_params.get("max_completion_tokens", None) or updated_sampling_params.get("max_tokens", None)
-                if "max_completion_tokens" in custom_sampling_params:
-                    custom_max_tokens = custom_sampling_params["max_completion_tokens"]
-                    if custom_max_tokens:
-                        custom_sampling_params["max_completion_tokens"] = min(custom_max_tokens, max_tokens)
-                    else:
-                        custom_sampling_params.pop("max_completion_tokens")
-                elif "max_tokens" in custom_sampling_params:
-                    custom_max_tokens = custom_sampling_params["max_tokens"]
-                    if custom_max_tokens:
-                        custom_sampling_params["max_tokens"] = min(custom_max_tokens, max_tokens)
-                    else:
-                        custom_sampling_params.pop("max_tokens")
                 updated_sampling_params.update(custom_sampling_params)
+
+            max_completion_tokens, max_tokens = updated_sampling_params.pop("max_completion_tokens", None), updated_sampling_params.pop("max_tokens", None)
+            if max_completion_tokens is None:
+                max_completion_tokens = max_tokens
+            updated_sampling_params.update({"max_completion_tokens": max_completion_tokens})
 
             updated_sampling_params.update({"logprobs": 1})
             updated_sampling_params.update(updated_sampling_params.get("extra_body", {}))
@@ -343,15 +335,8 @@ class OpenaiLlmProxyWithTracker(object):
 
 class AgentScopeLlmProxyWithTracker(OpenaiLlmProxyWithTracker):
 
-    async def __call__(
-        self,
-        messages: List[dict],
-        tools: List = [],
-        tool_choice: str = "auto",
-        structured_model=None,
-        **kwargs,
-    ) -> AgentScopeChatResponse:
+    async def __call__(self, messages: List[dict], tools: List | None = None, tool_choice: str = "auto", structured_model=None, **kwargs) -> AgentScopeChatResponse:
 
-        llm_output = await self.run_infer(messages, tools, tool_choice)
+        llm_output = await self.run_infer(messages, tools, tool_choice, **kwargs)
         response = convert_llm_proxy_response_to_agentscope_response(llm_output, structured_model=structured_model)
         return response
