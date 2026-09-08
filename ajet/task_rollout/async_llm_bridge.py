@@ -73,15 +73,17 @@ class AsyncLlmBridge(object):
             if sampling_params:
                 updated_sampling_params.update(sampling_params)
             if custom_sampling_params:
+                max_completion_tokens, max_tokens = custom_sampling_params.pop("max_completion_tokens", None), custom_sampling_params.pop("max_tokens", None)
+                if max_completion_tokens is None:
+                    max_completion_tokens = max_tokens
+                if max_completion_tokens >= self.config.ajet.rollout.max_response_length_in_one_turn:
+                    response_length_eps = 16  # Reserve a few tokens for later handling of special tokens like lm_start.
+                    max_completion_tokens = self.config.ajet.rollout.max_response_length_in_one_turn - response_length_eps
+                custom_sampling_params.update({"max_completion_tokens": max_completion_tokens})
                 updated_sampling_params.update(custom_sampling_params)
 
-            max_completion_tokens, max_tokens = updated_sampling_params.pop("max_completion_tokens", None), updated_sampling_params.pop("max_tokens", None)
-            if max_completion_tokens is None:
-                max_completion_tokens = max_tokens
-            updated_sampling_params.update({"max_completion_tokens": max_completion_tokens})
-
-            updated_sampling_params.update({"logprobs": 1})
-            updated_sampling_params.update(updated_sampling_params.get("extra_body", {}))
+            extra_body = updated_sampling_params.pop("extra_body", {})
+            updated_sampling_params.update({"logprobs": 1, **extra_body})
 
             # input_messages = copy.deepcopy(messages)
             # # the input (prompt) sequence as text
@@ -105,7 +107,7 @@ class AsyncLlmBridge(object):
             sample_num = updated_sampling_params.pop("n")
             tool_choice = updated_sampling_params.pop("tool_choice")
             response_format = updated_sampling_params.pop("response_format")
-            max_completion_tokens = updated_sampling_params.pop("max_tokens") or updated_sampling_params.pop("max_completion_tokens")
+            max_completion_tokens = updated_sampling_params.pop("max_completion_tokens")
             reasoning_effort = updated_sampling_params.pop("reasoning_effort")
             completion = await client.chat.completions.create(
                 model=model, messages=messages, tools=tools or [], tool_choice=tool_choice,
